@@ -4,6 +4,8 @@ Compose music for Black Desert Online outside of the game. Import MIDIs, edit in
 
 Supports all 26+ BDO instruments, per-instrument aux sends, MIDI tempo maps, and automatic sample extraction from your game installation so no copyrighted assets are distributed.
 
+![Screenshot](Screenshot.png)
+
 **Early access** — there will be bugs. Report them via [Issues](https://github.com/Bishop-R/BDOMusicTool/issues) or Discord DM: `bishof.`
 
 ## Download
