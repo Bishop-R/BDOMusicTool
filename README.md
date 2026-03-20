@@ -8,6 +8,8 @@ Supports all 26+ BDO instruments, per-instrument aux sends, MIDI tempo maps, and
 
 **Early access** — there will be bugs. Report them via [Issues](https://github.com/Bishop-R/BDOMusicTool/issues) or Discord DM: `bishof.`
 
+Most inputs are handled via shortcuts. Check the shortcut window in the bottom right if you're lost.
+
 ## Download
 
 Grab the latest build from [Releases](https://github.com/Bishop-R/BDOMusicTool/releases). Extract and run `composer.exe`. The first launch walks you through sample extraction and account setup.
