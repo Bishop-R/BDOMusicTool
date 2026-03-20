@@ -1,0 +1,8 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Name=Composer
+Comment=BDO Music Tool
+Exec=composer
+Icon=composer
+Type=Application
+Categories=AudioVideo;Audio;Music;
