@@ -94,41 +94,62 @@ static void extract_progress_render(int current, int total,
     SDL_SetRenderDrawColor(ec->renderer, 24, 26, 30, 255);
     SDL_RenderClear(ec->renderer);
 
-    /* title */
-    draw_text_centered(ec->renderer, "Extracting instrument samples...",
-                       w / 2.0f, h / 2.0f - 60.0f, 22.0f,
-                       220, 220, 220);
+    if (total == 0) {
+        /* Scanning phase — show spinner */
+        static const char spinner_chars[] = "|/-\\";
+        uint64_t ticks = SDL_GetTicks();
+        int frame = (int)((ticks / 150) % 4);
 
-    /* current instrument name */
-    draw_text_centered(ec->renderer, name,
-                       w / 2.0f, h / 2.0f - 25.0f, 16.0f,
-                       160, 170, 180);
+        char spin_title[128];
+        snprintf(spin_title, sizeof(spin_title), "[%c]  Scanning game archives...",
+                 spinner_chars[frame]);
 
-    /* progress text */
-    char prog_text[64];
-    snprintf(prog_text, sizeof(prog_text), "%d / %d", current, total);
-    draw_text_centered(ec->renderer, prog_text,
-                       w / 2.0f, h / 2.0f + 10.0f, 18.0f,
-                       200, 200, 200);
+        draw_text_centered(ec->renderer, spin_title,
+                           w / 2.0f, h / 2.0f - 30.0f, 22.0f,
+                           220, 220, 220);
 
-    /* progress bar */
-    float bar_w = 400.0f;
-    if (bar_w > w - 80.0f) bar_w = w - 80.0f;
-    float bar_h = 16.0f;
-    float bar_x = (w - bar_w) / 2.0f;
-    float bar_y = h / 2.0f + 40.0f;
+        draw_text_centered(ec->renderer, name,
+                           w / 2.0f, h / 2.0f + 10.0f, 14.0f,
+                           120, 130, 140);
+    } else {
+        /* Extraction phase — show progress bar */
 
-    /* bar background */
-    draw_rounded_rect(ec->renderer, bar_x, bar_y, bar_w, bar_h,
-                      4.0f, 50, 52, 58, 255);
+        /* title */
+        draw_text_centered(ec->renderer, "Extracting instrument samples...",
+                           w / 2.0f, h / 2.0f - 60.0f, 22.0f,
+                           220, 220, 220);
 
-    /* bar fill */
-    float frac = (float)current / (float)total;
-    float fill_w = bar_w * frac;
-    if (fill_w > 0) {
-        draw_rounded_rect(ec->renderer, bar_x, bar_y,
-                          fill_w, bar_h, 4.0f,
-                          80, 140, 220, 255);
+        /* current instrument name */
+        draw_text_centered(ec->renderer, name,
+                           w / 2.0f, h / 2.0f - 25.0f, 16.0f,
+                           160, 170, 180);
+
+        /* progress text */
+        char prog_text[64];
+        snprintf(prog_text, sizeof(prog_text), "%d / %d", current, total);
+        draw_text_centered(ec->renderer, prog_text,
+                           w / 2.0f, h / 2.0f + 10.0f, 18.0f,
+                           200, 200, 200);
+
+        /* progress bar */
+        float bar_w = 400.0f;
+        if (bar_w > w - 80.0f) bar_w = w - 80.0f;
+        float bar_h = 16.0f;
+        float bar_x = (w - bar_w) / 2.0f;
+        float bar_y = h / 2.0f + 40.0f;
+
+        /* bar background */
+        draw_rounded_rect(ec->renderer, bar_x, bar_y, bar_w, bar_h,
+                          4.0f, 50, 52, 58, 255);
+
+        /* bar fill */
+        float frac = (float)current / (float)total;
+        float fill_w = bar_w * frac;
+        if (fill_w > 0) {
+            draw_rounded_rect(ec->renderer, bar_x, bar_y,
+                              fill_w, bar_h, 4.0f,
+                              80, 140, 220, 255);
+        }
     }
 
     SDL_RenderPresent(ec->renderer);
@@ -154,6 +175,7 @@ bool muse_app_init(MuseApp *app) {
     app->resize_note_idx = -1;
     app->midi_dlg_dropdown_ch = -1;
     app->midi_dlg_dropdown_hover = -1;
+    app->vel_pane_h      = VEL_PANE_H_DEFAULT;
     app->cur_vel         = 100;
     app->cur_ntype       = 0;
     app->key_highlight_pitch = -1;
@@ -315,11 +337,7 @@ bool muse_app_init(MuseApp *app) {
                             if (!last_sep) last_sep = strrchr(dropped_paz_dir, '\\');
                             if (last_sep) *last_sep = '\0';
                             /* check if this dir or its parent has PAZ files */
-                            char test_path[4096];
-                            snprintf(test_path, sizeof(test_path), "%s/PAD10132.PAZ", dropped_paz_dir);
-                            FILE *pf = fopen(test_path, "rb");
-                            if (pf) {
-                                fclose(pf);
+                            if (se_has_paz_files(dropped_paz_dir)) {
                                 paz_dir = dropped_paz_dir;
                                 got_path = true;
                                 waiting = false;
@@ -331,10 +349,7 @@ bool muse_app_init(MuseApp *app) {
                                     char parent[4096];
                                     snprintf(parent, sizeof(parent), "%.*s/Paz",
                                              (int)(parent_sep - dropped_paz_dir), dropped_paz_dir);
-                                    snprintf(test_path, sizeof(test_path), "%s/PAD10132.PAZ", parent);
-                                    pf = fopen(test_path, "rb");
-                                    if (pf) {
-                                        fclose(pf);
+                                    if (se_has_paz_files(parent)) {
                                         snprintf(dropped_paz_dir, sizeof(dropped_paz_dir), "%s", parent);
                                         paz_dir = dropped_paz_dir;
                                         got_path = true;
@@ -571,7 +586,7 @@ static bool has_selected_notes(const MuseApp *app) {
     return app->_sel_cache;
 }
 float app_roll_h(const MuseApp *app) {
-    float vel_h = has_selected_notes(app) ? VEL_PANE_H : 0;
+    float vel_h = has_selected_notes(app) ? app->vel_pane_h : 0;
     return (float)(app->win_h - TRANSPORT_H - 2 - HEADER_HEIGHT - STATUS_BAR_H) - vel_h;
 }
 
@@ -1030,6 +1045,37 @@ static void handle_mouse_down_roll(MuseApp *app, float mx, float my, int button)
         return;
     }
 
+    if (button == SDL_BUTTON_RIGHT && (SDL_GetModState() & SDL_KMOD_ALT)) {
+        /* Alt+right-click: drag horizontally to set velocity on note */
+        NoteArray *na = app_active_notes(app);
+        if (na) {
+            bool edge = false;
+            int idx = find_note_at(app, mx, my, &edge);
+            if (idx >= 0) {
+                undo_push(&app->project);
+                app->vel_paint_dragging = true;
+                app->vel_paint_mouse_x = mx;
+                app->vel_paint_mouse_y = my;
+                app->vel_paint_note_idx = idx;
+                /* Set velocity from cursor position within note */
+                MuseNote *n = &na->notes[idx];
+                float nx = app_ms_to_x(app, n->start);
+                float nw = app_ms_to_x(app, n->start + n->dur) - nx;
+                if (nw < 1) nw = 1;
+                float frac = (mx - nx) / nw;
+                if (frac < 0) frac = 0;
+                if (frac > 1) frac = 1;
+                int vel = (int)(frac * 126.0f + 1.0f);
+                if (vel < 1) vel = 1;
+                if (vel > 127) vel = 127;
+                n->vel = (uint8_t)vel;
+                app->vel_paint_last_vel = vel;
+                app->project.dirty = true;
+            }
+        }
+        return;
+    }
+
     if (button == SDL_BUTTON_RIGHT) {
         /* Right-click erase sweep */
         undo_push(&app->project);
@@ -1265,6 +1311,16 @@ static void handle_mouse_motion(MuseApp *app, float mx, float my) {
         return;
     }
 
+    /* Velocity pane resize drag */
+    if (app->vel_resize_dragging) {
+        float delta = app->vel_resize_start_y - my;
+        float new_h = app->vel_resize_start_h + delta;
+        if (new_h < VEL_PANE_H_MIN) new_h = VEL_PANE_H_MIN;
+        if (new_h > VEL_PANE_H_MAX) new_h = VEL_PANE_H_MAX;
+        app->vel_pane_h = new_h;
+        return;
+    }
+
     /* Velocity pane brush-select (shift+drag)  - selects stem lines */
     if (app->vel_brush_selecting) {
         NoteArray *na = app_active_notes(app);
@@ -1272,7 +1328,7 @@ static void handle_mouse_motion(MuseApp *app, float mx, float my) {
             float ry = app_roll_y(app), rh = app_roll_h(app);
             float vel_y_bs = ry + rh;
             float pad = 4;
-            float y_base = vel_y_bs + VEL_PANE_H - pad;
+            float y_base = vel_y_bs + app->vel_pane_h - pad;
             /* Select all stems whose x is near the cursor, regardless of y */
             for (int i = 0; i < na->count; i++) {
                 if (!(na->notes[i].selected & 1)) continue;
@@ -1288,13 +1344,15 @@ static void handle_mouse_motion(MuseApp *app, float mx, float my) {
 
     /* Shift+right-drag: set stems to mouse height as cursor passes them */
     if (app->vel_set_dragging) {
+        app->vel_set_mouse_x = mx;
+        app->vel_set_mouse_y = my;
         NoteArray *na = app_active_notes(app);
         if (na) {
             float ry = app_roll_y(app), rh = app_roll_h(app);
             float vel_y = ry + rh;
             float pad = 4;
-            float bar_h = VEL_PANE_H - 2 * pad;
-            float y_base = vel_y + VEL_PANE_H - pad;
+            float bar_h = app->vel_pane_h - 2 * pad;
+            float y_base = vel_y + app->vel_pane_h - pad;
             float new_vel = (y_base - my) / bar_h * 127.0f;
             if (new_vel < 1) new_vel = 1;
             if (new_vel > 127) new_vel = 127;
@@ -1316,8 +1374,8 @@ static void handle_mouse_motion(MuseApp *app, float mx, float my) {
             float ry = app_roll_y(app), rh = app_roll_h(app);
             float vel_y = ry + rh;
             float pad = 4;
-            float bar_h = VEL_PANE_H - 2 * pad;
-            float y_base = vel_y + VEL_PANE_H - pad;
+            float bar_h = app->vel_pane_h - 2 * pad;
+            float y_base = vel_y + app->vel_pane_h - pad;
             float new_vel = (y_base - my) / bar_h * 127.0f;
             if (new_vel < 1) new_vel = 1;
             if (new_vel > 127) new_vel = 127;
@@ -1389,6 +1447,30 @@ static void handle_mouse_motion(MuseApp *app, float mx, float my) {
             app->project.effector_chorus_fb    = (uint8_t)app->fx_chorus_fb;
             app->project.effector_chorus_depth = (uint8_t)app->fx_chorus_depth;
             app->project.effector_chorus_freq  = (uint8_t)app->fx_chorus_freq;
+        }
+        return;
+    }
+
+    if (app->vel_paint_dragging) {
+        /* Alt+right-drag: velocity maps to cursor position within note width */
+        app->vel_paint_mouse_x = mx;
+        app->vel_paint_mouse_y = my;
+        NoteArray *na = app_active_notes(app);
+        if (na && app->vel_paint_note_idx >= 0 &&
+            app->vel_paint_note_idx < na->count) {
+            MuseNote *n = &na->notes[app->vel_paint_note_idx];
+            float nx = app_ms_to_x(app, n->start);
+            float nw = app_ms_to_x(app, n->start + n->dur) - nx;
+            if (nw < 1) nw = 1;
+            float frac = (mx - nx) / nw;
+            if (frac < 0) frac = 0;
+            if (frac > 1) frac = 1;
+            int vel = (int)(frac * 126.0f + 1.0f);
+            if (vel < 1) vel = 1;
+            if (vel > 127) vel = 127;
+            na->notes[app->vel_paint_note_idx].vel = (uint8_t)vel;
+            app->vel_paint_last_vel = vel;
+            app->project.dirty = true;
         }
         return;
     }
@@ -1563,6 +1645,15 @@ static void handle_mouse_motion(MuseApp *app, float mx, float my) {
                     cid = SDL_SYSTEM_CURSOR_MOVE;
             }
         }
+        /* Velocity pane resize edge — show NS resize cursor */
+        if (has_selected_notes(app)) {
+            float vel_edge_y = roll_ry + roll_rh;
+            if (my >= vel_edge_y - 4 && my <= vel_edge_y + 4)
+                cid = SDL_SYSTEM_CURSOR_NS_RESIZE;
+        }
+        if (app->vel_resize_dragging)
+            cid = SDL_SYSTEM_CURSOR_NS_RESIZE;
+
         if (cid != last_cid) {
             if (g_cursors[cid]) SDL_SetCursor(g_cursors[cid]);
             last_cid = cid;
@@ -1573,6 +1664,11 @@ static void handle_mouse_motion(MuseApp *app, float mx, float my) {
 static void handle_mouse_up(MuseApp *app, int button) {
     if (app->sb_dragging > 0 && button == SDL_BUTTON_LEFT) {
         app->sb_dragging = 0;
+        return;
+    }
+
+    if (app->vel_resize_dragging && button == SDL_BUTTON_LEFT) {
+        app->vel_resize_dragging = false;
         return;
     }
 
@@ -1601,6 +1697,11 @@ static void handle_mouse_up(MuseApp *app, int button) {
 
     if (app->lp_drag_slider > 0 && button == SDL_BUTTON_LEFT) {
         app->lp_drag_slider = 0;
+        return;
+    }
+
+    if (app->vel_paint_dragging && button == SDL_BUTTON_RIGHT) {
+        app->vel_paint_dragging = false;
         return;
     }
 
@@ -2160,7 +2261,7 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
     if (!app->midi_dlg_open || !app->midi_dlg_data) return false;
     MidiImportData *mid = (MidiImportData *)app->midi_dlg_data;
 
-    float dw = 500, dh = 430;
+    float dw = 500, dh = 452;
     float dx = ((float)app->win_w - dw) / 2;
     float dy = ((float)app->win_h - dh) / 2;
 
@@ -2170,6 +2271,10 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
     }
     float combine_cb_y = content_y;
     content_y += 22;
+    float vel_mode_y = content_y;
+    content_y += 20; /* velocity mode buttons */
+    if (mid->vel_mode == VEL_MODE_RESCALE) content_y += 20;
+    else content_y += 2;
     content_y += 16; /* column headers */
     float list_h = dh - (content_y - dy) - 50;
     float row_h = 32;
@@ -2309,6 +2414,37 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
             return true;
         }
 
+        /* Velocity mode buttons */
+        if (my >= vel_mode_y && my < vel_mode_y + 16) {
+            float bx = dx + 80;
+            for (int v = 0; v < VEL_MODE_COUNT; v++) {
+                float bw = 52;
+                if (mx >= bx && mx < bx + bw) {
+                    mid->vel_mode = (VelMode)v;
+                    if (app->edit_field >= 4 && app->edit_field <= 5) {
+                        app->edit_field = 0;
+                        app->edit_buf[0] = '\0';
+                    }
+                    return true;
+                }
+                bx += bw + 4;
+            }
+        }
+
+        /* Rescale velocity parameter fields */
+        if (mid->vel_mode == VEL_MODE_RESCALE) {
+            for (int p = 0; p < 2; p++) {
+                if (ui_rect_contains(app->_vel_param_rects[p], mx, my)) {
+                    app->edit_field = 4 + p;
+                    snprintf(app->edit_buf, sizeof(app->edit_buf), "%d",
+                             p == 0 ? mid->vel_min : mid->vel_max);
+                    app->edit_cursor = (int)strlen(app->edit_buf);
+                    SDL_StartTextInput(app->window);
+                    return true;
+                }
+            }
+        }
+
         /* Click on instrument selector -> open dropdown for that channel */
         if (app->midi_dlg_hover >= 0 && app->midi_dlg_hover < mid->num_channels) {
             MidiChannel *hch = &mid->channels[app->midi_dlg_hover];
@@ -2368,10 +2504,23 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
     }
 
     if (ev->type == SDL_EVENT_KEY_DOWN && ev->key.key == SDLK_ESCAPE) {
+        if (app->edit_field >= 4 && app->edit_field <= 5) {
+            /* Cancel vel param edit */
+            app->edit_field = 0;
+            app->edit_buf[0] = '\0';
+            SDL_StopTextInput(app->window);
+            return true;
+        }
         midi_import_data_free(mid);
         app->midi_dlg_data = NULL;
         app->midi_dlg_open = false;
         return true;
+    }
+
+    /* Let key/text events pass through to edit_field handler when editing vel params */
+    if (app->edit_field >= 4 && app->edit_field <= 5) {
+        if (ev->type == SDL_EVENT_KEY_DOWN || ev->type == SDL_EVENT_TEXT_INPUT)
+            return false;
     }
 
     /* Scroll the channel list */
@@ -2718,6 +2867,8 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
             UiRect *er;
             if (app->edit_field == 1) er = &app->_tb_bpm_entry;
             else if (app->edit_field == 2) er = &app->_tb_meas_entry;
+            else if (app->edit_field >= 4 && app->edit_field <= 5)
+                er = &app->_vel_param_rects[app->edit_field - 4];
             else er = &app->_lp_fn_entry;
             if (!ui_rect_contains(*er, mx, my)) {
                 /* Commit */
@@ -2732,6 +2883,14 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
                 } else if (app->edit_field == 3) {
                     if (app->edit_buf[0])
                         snprintf(app->filename, sizeof(app->filename), "%s", app->edit_buf);
+                } else if (app->edit_field >= 4 && app->edit_field <= 5 && app->midi_dlg_data) {
+                    MidiImportData *vmid = (MidiImportData *)app->midi_dlg_data;
+                    int val = atoi(app->edit_buf);
+                    if (val < 1) val = 1; if (val > 127) val = 127;
+                    switch (app->edit_field) {
+                        case 4: vmid->vel_min = val; break;
+                        case 5: vmid->vel_max = val; break;
+                    }
                 }
                 app->edit_field = 0;
                 app->edit_buf[0] = '\0';
@@ -2900,16 +3059,25 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
             handle_mouse_down_roll(app, mx, my, ev->button.button);
         }
 
-        /* Velocity pane click  - find knob, start drag or brush-select */
+        /* Velocity pane resize handle (top edge) */
         float vel_y = ry + rh;
+        if (has_selected_notes(app) && ev->button.button == SDL_BUTTON_LEFT &&
+            my >= vel_y - 4 && my <= vel_y + 4) {
+            app->vel_resize_dragging = true;
+            app->vel_resize_start_y = my;
+            app->vel_resize_start_h = app->vel_pane_h;
+            return;
+        }
+
+        /* Velocity pane click  - find knob, start drag or brush-select */
         if (ev->button.button == SDL_BUTTON_LEFT &&
-            mx >= rx && mx < rx + rw && my >= vel_y && my < vel_y + VEL_PANE_H) {
+            mx >= rx && mx < rx + rw && my >= vel_y && my < vel_y + app->vel_pane_h) {
             NoteArray *na = app_active_notes(app);
             bool shift_held = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
             if (na) {
                 float pad = 4;
-                float bar_h = VEL_PANE_H - 2 * pad;
-                float y_base = vel_y + VEL_PANE_H - pad;
+                float bar_h = app->vel_pane_h - 2 * pad;
+                float y_base = vel_y + app->vel_pane_h - pad;
                 /* Find nearest selected note stem */
                 int best = -1;
                 float best_dist = 999999;
@@ -2983,14 +3151,16 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
         /* Shift+right-click+drag in velocity pane: set stems to mouse height */
         if (ev->button.button == SDL_BUTTON_RIGHT &&
             (SDL_GetModState() & SDL_KMOD_SHIFT) &&
-            mx >= rx && mx < rx + rw && my >= vel_y && my < vel_y + VEL_PANE_H) {
+            mx >= rx && mx < rx + rw && my >= vel_y && my < vel_y + app->vel_pane_h) {
             NoteArray *na = app_active_notes(app);
             if (na) {
                 float pad = 4;
-                float bar_h = VEL_PANE_H - 2 * pad;
-                float y_base = vel_y + VEL_PANE_H - pad;
+                float bar_h = app->vel_pane_h - 2 * pad;
+                float y_base = vel_y + app->vel_pane_h - pad;
                 undo_push(&app->project);
                 app->vel_set_dragging = true;
+                app->vel_set_mouse_x = mx;
+                app->vel_set_mouse_y = my;
                 /* Set any stems near the cursor to the current y velocity */
                 float new_vel = (y_base - my) / bar_h * 127.0f;
                 if (new_vel < 1) new_vel = 1;
@@ -3066,6 +3236,14 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
                     } else if (app->edit_field == 3) {
                         if (app->edit_buf[0])
                             snprintf(app->filename, sizeof(app->filename), "%s", app->edit_buf);
+                    } else if (app->edit_field >= 4 && app->edit_field <= 5 && app->midi_dlg_data) {
+                        MidiImportData *vmid = (MidiImportData *)app->midi_dlg_data;
+                        int val = atoi(app->edit_buf);
+                        if (val < 1) val = 1; if (val > 127) val = 127;
+                        switch (app->edit_field) {
+                            case 4: vmid->vel_min = val; break;
+                            case 5: vmid->vel_max = val; break;
+                        }
                     }
                 }
                 app->edit_field = 0;
@@ -3109,10 +3287,16 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
                     app->edit_buf[len] = (char)('0' + (k - SDLK_0));
                     app->edit_buf[len + 1] = '\0';
                 }
-            } else if (k >= SDLK_KP_0 && k <= SDLK_KP_9) {
+            } else if (k >= SDLK_KP_1 && k <= SDLK_KP_9) {
                 int len = (int)strlen(app->edit_buf);
                 if (len < 5) {
-                    app->edit_buf[len] = (char)('0' + (k - SDLK_KP_0));
+                    app->edit_buf[len] = (char)('1' + (k - SDLK_KP_1));
+                    app->edit_buf[len + 1] = '\0';
+                }
+            } else if (k == SDLK_KP_0) {
+                int len = (int)strlen(app->edit_buf);
+                if (len < 5) {
+                    app->edit_buf[len] = '0';
                     app->edit_buf[len + 1] = '\0';
                 }
             }
@@ -3831,6 +4015,11 @@ void muse_app_render(MuseApp *app) {
         SC_ROW("Alt+Drag",        "Lasso select");
         SC_ROW("Right-Drag",      "Erase sweep");
         SC_ROW("Middle-Click",    "Chordify (with selection)");
+        ly += 6;
+
+        draw_text_bold(r, "Velocity", lx, ly, 10, COL_TEXT); ly += lh;
+        SC_ROW("Alt+Right-Drag",   "Paint velocity on note");
+        SC_ROW("Shift+Right-Drag", "Set vel stems to cursor");
         ly += 6;
 
         draw_text_bold(r, "View", lx, ly, 10, COL_TEXT); ly += lh;

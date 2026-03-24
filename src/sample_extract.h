@@ -26,9 +26,8 @@ typedef struct {
     const char *filename;
 } InstrumentEntry;
 
-/* The full instrument table and its count */
-extern const InstrumentEntry SE_INSTRUMENTS[];
-extern const int SE_NUM_INSTRUMENTS;
+/* Check if a directory contains PAZ archive files. Returns 1 if found. */
+int se_has_paz_files(const char *dir);
 
 /* ---- Extracted WEM file ---- */
 

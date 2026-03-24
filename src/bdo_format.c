@@ -1,6 +1,7 @@
 #include "bdo_format.h"
 #include "ice.h"
 #include "instruments.h"
+#include "platform.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -28,7 +29,7 @@ static int parse_inst_tag(const char *tag, uint8_t *ids, int max) {
 }
 
 int bdo_load(const char *path, const char *linked_name, MuseProject *out) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen_utf8(path, "rb");
     if (!f) return -1;
 
     fseek(f, 0, SEEK_END);
@@ -330,7 +331,7 @@ int bdo_save(const char *path, const MuseProject *proj) {
     ice_encrypt(pt, off);
 
     /* write it out with the version prefix */
-    FILE *f = fopen(path, "wb");
+    FILE *f = fopen_utf8(path, "wb");
     if (!f) { free(pt); return -1; }
 
     uint8_t ver[4];
@@ -344,7 +345,7 @@ int bdo_save(const char *path, const MuseProject *proj) {
 
 int bdo_extract_owner(const char *path, uint32_t *owner_id_out,
                       char *name_out, int name_sz) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen_utf8(path, "rb");
     if (!f) return -1;
 
     fseek(f, 0, SEEK_END);

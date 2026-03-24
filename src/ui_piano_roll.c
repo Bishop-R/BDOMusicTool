@@ -201,7 +201,7 @@ void ui_piano_roll_render(MuseApp *app) {
         }
     }
 
-    /* fades in during sustained playback */
+    /* aurora nebula - fades in during sustained playback */
     if (app->continuous_play_secs > 20.0f) {
         float aurora_t = fminf((app->continuous_play_secs - 20.0f) / 10.0f, 1.0f);
         float t = app->anim_time;
@@ -569,7 +569,14 @@ void ui_piano_roll_render(MuseApp *app) {
                 if (kh > 6) {
                     float vel_alpha = 1.0f - fminf(persp_t * 8.0f, 1.0f);
                     if (vel_alpha > 0.01f) {
-                        float vw = (note->vel / 127.0f) * nw;
+                        float vw;
+                        if (app->vel_paint_dragging && n == app->vel_paint_note_idx) {
+                            vw = app->vel_paint_mouse_x - nx;
+                            if (vw < 0) vw = 0;
+                            if (vw > nw) vw = nw;
+                        } else {
+                            vw = (note->vel / 127.0f) * nw;
+                        }
                         draw_filled_rect(r, nx, ny + nh_2d - 1 - bar_h, vw, bar_h,
                                          0xFF, 0xFF, 0xFF, (uint8_t)(0xFF * vel_alpha));
                     }
@@ -703,6 +710,20 @@ void ui_piano_roll_render(MuseApp *app) {
             /* Core line */
             draw_vline(r, px, ry, ry + rh, COL_PLAYHEAD);
             draw_vline(r, px + 1, ry, ry + rh, COL_PLAYHEAD);
+        }
+    }
+
+    /* Velocity paint readout (alt+right-drag on notes) */
+    if (app->vel_paint_dragging) {
+        NoteArray *na = app_active_notes(app);
+        if (na && app->vel_paint_note_idx >= 0 &&
+            app->vel_paint_note_idx < na->count) {
+            MuseNote *n = &na->notes[app->vel_paint_note_idx];
+            float nx = app_ms_to_x(app, n->start);
+            float ny = app_pitch_to_y(app, n->pitch);
+            char vstr[8];
+            snprintf(vstr, sizeof(vstr), "%d", app->vel_paint_last_vel);
+            draw_text_bold(r, vstr, nx + 4, ny - 12, 9, COL_GOLD_BRIGHT);
         }
     }
 
@@ -936,29 +957,44 @@ void ui_piano_roll_render(MuseApp *app) {
         if (sel_count > 0) {
             float vy = ry + rh;
             float vpad = 4;
-            float vbar_h = VEL_PANE_H - 2 * vpad;
-            float bottom_y = vy + VEL_PANE_H - vpad;
+            float vbar_h = app->vel_pane_h - 2 * vpad;
+            float bottom_y = vy + app->vel_pane_h - vpad;
 
             /* Separator line */
             draw_hline(r, keys_x, (float)app->win_w, vy, COL_BORDER);
 
             /* Vel label area (left side, same width as keys) */
-            draw_filled_rect(r, keys_x, vy + 1, KEYS_WIDTH, VEL_PANE_H - 1,
+            draw_filled_rect(r, keys_x, vy + 1, KEYS_WIDTH, app->vel_pane_h - 1,
                              COL_BG_DARK, 0xFF);
             /* Scale labels and tick marks */
             const int scale_vals[] = {1, 25, 50, 75, 100, 127};
             for (int s = 0; s < 6; s++) {
                 float sy = bottom_y - (scale_vals[s] / 127.0f) * vbar_h;
                 char sv[8]; snprintf(sv, sizeof(sv), "%d", scale_vals[s]);
-                draw_text_right(r, sv, keys_x + KEYS_WIDTH - 4, sy - 3, 7, COL_TEXT_DIM);
-                draw_hline(r, keys_x + KEYS_WIDTH - 2, keys_x + KEYS_WIDTH, sy,
-                           COL_BORDER_LIGHT);
+                if (scale_vals[s] == 100) {
+                    draw_text_right(r, sv, keys_x + KEYS_WIDTH - 4, sy - 3, 7,
+                                    0x90, 0x80, 0x50);
+                    draw_hline(r, keys_x + KEYS_WIDTH - 2, keys_x + KEYS_WIDTH, sy,
+                               0x90, 0x80, 0x50);
+                } else {
+                    draw_text_right(r, sv, keys_x + KEYS_WIDTH - 4, sy - 3, 7, COL_TEXT_DIM);
+                    draw_hline(r, keys_x + KEYS_WIDTH - 2, keys_x + KEYS_WIDTH, sy,
+                               COL_BORDER_LIGHT);
+                }
             }
 
             /* Vel pane background */
-            draw_filled_rect(r, rx, vy + 1, rw, VEL_PANE_H - 1, COL_BG_DARK, 0xFF);
+            draw_filled_rect(r, rx, vy + 1, rw, app->vel_pane_h - 1, COL_BG_DARK, 0xFF);
 
-            push_clip(r, rx, vy + 1, rw, VEL_PANE_H - 2);
+            push_clip(r, rx, vy + 1, rw, app->vel_pane_h - 2);
+
+            /* Sample-switch guidelines at vel 100 and 121 */
+            {
+                float y100 = bottom_y - (100.0f / 127.0f) * vbar_h;
+                float y121 = bottom_y - (121.0f / 127.0f) * vbar_h;
+                draw_hline(r, rx, rx + rw, y100, 0x50, 0x40, 0x20);
+                draw_hline(r, rx, rx + rw, y121, 0x50, 0x40, 0x20);
+            }
 
             /* Build sorted list of selected notes for trapezoid graph */
             typedef struct { float x; float y_top; int idx; } VelPoint;
@@ -1084,6 +1120,18 @@ void ui_piano_roll_render(MuseApp *app) {
                 char vstr[8];
                 snprintf(vstr, sizeof(vstr), "%d", dn->vel);
                 draw_text_bold(r, vstr, dnx + 10, dn_y - 4, 9, COL_GOLD_BRIGHT);
+            }
+
+            /* Velocity readout while shift+right-drag setting */
+            if (app->vel_set_dragging) {
+                float set_vel = (bottom_y - app->vel_set_mouse_y) / vbar_h * 127.0f;
+                if (set_vel < 1) set_vel = 1;
+                if (set_vel > 127) set_vel = 127;
+                float set_y = bottom_y - (set_vel / 127.0f) * vbar_h;
+                char vstr[8];
+                snprintf(vstr, sizeof(vstr), "%d", (int)set_vel);
+                draw_text_bold(r, vstr, app->vel_set_mouse_x + 10,
+                               set_y - 4, 9, COL_GOLD_BRIGHT);
             }
 
             pop_clip(r);
@@ -2079,7 +2127,7 @@ void ui_midi_import_render(MuseApp *app) {
     SDL_Renderer *r = app->renderer;
     MidiImportData *mid = (MidiImportData *)app->midi_dlg_data;
 
-    float dw = 500, dh = 430;
+    float dw = 500, dh = 452;
     float dx = ((float)app->win_w - dw) / 2;
     float dy = ((float)app->win_h - dh) / 2;
 
@@ -2137,6 +2185,64 @@ void ui_midi_import_render(MuseApp *app) {
             draw_text(r, cins_name, cinst_rc.x + 6, cb_y + 1, 9, 0x60, 0x60, 0x60);
         }
         content_y += 22;
+    }
+
+    /* Velocity mode selector */
+    {
+        static const char *vel_labels[] = {
+            "Raw", "Rescale", "Layered"
+        };
+        draw_text(r, "Velocity:", dx + 16, content_y + 2, 9, COL_TEXT);
+        float bx = dx + 80;
+        for (int v = 0; v < VEL_MODE_COUNT; v++) {
+            float bw = 52;
+            UiRect vr = { bx, content_y, bw, 16 };
+            bool active = (mid->vel_mode == v);
+            if (active) {
+                draw_rounded_rect(r, vr.x, vr.y, vr.w, vr.h, 3,
+                                  COL_GOLD_DARK, 0xFF);
+                draw_text_centered(r, vel_labels[v], vr.x + vr.w / 2,
+                                   vr.y + vr.h / 2, 8, COL_TEXT);
+            } else {
+                draw_rounded_rect(r, vr.x, vr.y, vr.w, vr.h, 3,
+                                  COL_SURFACE, 0xFF);
+                draw_rounded_rect_outline(r, vr.x, vr.y, vr.w, vr.h, 3,
+                                          COL_BORDER);
+                draw_text_centered(r, vel_labels[v], vr.x + vr.w / 2,
+                                   vr.y + vr.h / 2, 8, COL_TEXT_DIM);
+            }
+            bx += bw + 4;
+        }
+        content_y += 20;
+
+        /* Parameter fields for Rescale mode */
+        float px = dx + 80;
+        float py = content_y;
+        char vbuf[16];
+        if (mid->vel_mode == VEL_MODE_RESCALE) {
+            draw_text(r, "Min:", dx + 16, py + 2, 9, COL_TEXT_DIM);
+            UiRect r_min = { px, py, 36, 16 };
+            if (app->edit_field == 4) {
+                draw_ctk_entry(app->renderer, r_min, app->edit_buf, 9, true);
+            } else {
+                snprintf(vbuf, sizeof(vbuf), "%d", mid->vel_min);
+                draw_ctk_entry(app->renderer, r_min, vbuf, 9, false);
+            }
+            app->_vel_param_rects[0] = r_min;
+
+            draw_text(r, "Max:", px + 44, py + 2, 9, COL_TEXT_DIM);
+            UiRect r_max = { px + 76, py, 36, 16 };
+            if (app->edit_field == 5) {
+                draw_ctk_entry(app->renderer, r_max, app->edit_buf, 9, true);
+            } else {
+                snprintf(vbuf, sizeof(vbuf), "%d", mid->vel_max);
+                draw_ctk_entry(app->renderer, r_max, vbuf, 9, false);
+            }
+            app->_vel_param_rects[1] = r_max;
+            content_y += 20;
+        } else {
+            content_y += 2;
+        }
     }
 
     /* Column headers */

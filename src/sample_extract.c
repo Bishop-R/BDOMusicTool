@@ -30,57 +30,57 @@
 #else
 #include <unistd.h>
 #include <sys/types.h>
+#include <dirent.h>
 #define mkdir_p(path) mkdir(path, 0755)
 #define PATH_SEP '/'
 #define PATH_SEP_STR "/"
 #endif
 
-/* ---- Instrument table ---- */
+/* ---- Target BNK filenames (searched for in PAZ indices at runtime) ---- */
 
-const InstrumentEntry SE_INSTRUMENTS[] = {
-    {10132, 4340972,  304616,  304600,  "midi_instrument_00_acousticguitar.bnk"},
-    {10132, 4645588,  242544,  242534,  "midi_instrument_01_flute.bnk"},
-    {10132, 4888132,   92656,   92643,  "midi_instrument_02_recorder.bnk"},
-    {10132, 4980788,   73144,   73129,  "midi_instrument_03_snaredrum.bnk"},
-    {10132, 5053932,  130760,  130746,  "midi_instrument_04_handdrum.bnk"},
-    {10132, 5184692,  166824,  166809,  "midi_instrument_05_piatticymbals.bnk"},
-    {10132, 5351516,  108792,  108780,  "midi_instrument_06_harp.bnk"},
-    {10132, 5460308,  199264,  199249,  "midi_instrument_07_piano.bnk"},
-    {10132, 5659572,  188912,  188900,  "midi_instrument_08_violin.bnk"},
-    {10132, 5848484,   14512,   14497,  "midi_instrument_09_pandrum.bnk"},
-    {10132, 5862996, 4006304, 4006290,  "midi_instrument_10_proguitar.bnk"},
-    {10133,     276, 1783752, 1783743,  "midi_instrument_11_proflute.bnk"},
-    {10133, 1784028, 1695904, 1695890,  "midi_instrument_13_prodrumset.bnk"},
-    {10133, 3479932, 2672776, 2672762,  "midi_instrument_14_probasselectric.bnk"},
-    {10133, 6152708, 3092392, 3092378,  "midi_instrument_15_probasscontra.bnk"},
-    {10134,     204, 3248320, 3248304,  "midi_instrument_16_proharp.bnk"},
-    {10134, 3248524, 3897624, 3897611,  "midi_instrument_17_propiano.bnk"},
-    {10134, 7146148, 2940288, 2940279,  "midi_instrument_18_proviolin.bnk"},
-    {10135,     364, 1677504, 1677494,  "midi_instrument_19_propandrum.bnk"},
-    {10135, 1677868, 1911312, 1911300,  "midi_instrument_24_proguitarelectricclean.bnk"},
-    {10135, 3589180, 1942552, 1942541,  "midi_instrument_25_proguitarelectricdrive.bnk"},
-    {10135, 5531732, 2146136, 2146127,  "midi_instrument_26_proguitarelectricdist.bnk"},
-    {10135, 7677868, 3494904, 3494894,  "midi_instrument_27_proclarinet.bnk"},
-    {10136,     772, 3699384, 3699369,  "midi_instrument_28_prohorn.bnk"},
-    {10136, 3700156,   75896,   95517,  "midi_instrument_synth_saw_basic.bnk"},
-    {10136, 3776052,  702416,  702404,  "midi_instrument_synth_saw_stereo.bnk"},
-    {10136, 4478468,  829656,  829643,  "midi_instrument_synth_saw_super.bnk"},
-    {10136, 5308124,  954432,  954421,  "midi_instrument_synth_saw_superoct.bnk"},
-    {10136, 6262556,  117336,  141011,  "midi_instrument_synth_sine_basic.bnk"},
-    {10136, 6379892,  281320,  312957,  "midi_instrument_synth_sine_stereo.bnk"},
-    {10136, 6661212,  335792,  335780,  "midi_instrument_synth_sine_super.bnk"},
-    {10136, 6997004,  354920,  354909,  "midi_instrument_synth_sine_superoct.bnk"},
-    {10136, 7351924,   49136,   67928,  "midi_instrument_synth_square_basic.bnk"},
-    {10136, 7401060,  834784,  834775,  "midi_instrument_synth_square_stereo.bnk"},
-    {10136, 8235844,  689600,  689585,  "midi_instrument_synth_square_super.bnk"},
-    {10137,     812,  889576,  889560,  "midi_instrument_synth_square_superoct.bnk"},
-    {10137,  890388,  354472,  426766,  "midi_instrument_synth_triangle_basic.bnk"},
-    {10137, 1244860,  502944,  541983,  "midi_instrument_synth_triangle_stereo.bnk"},
-    {10137, 1747804,  562016,  562007,  "midi_instrument_synth_triangle_super.bnk"},
-    {10137, 2309820,  621416,  621404,  "midi_instrument_synth_triangle_superoct.bnk"},
+static const char *SE_TARGET_BNKS[] = {
+    "midi_instrument_00_acousticguitar.bnk",
+    "midi_instrument_01_flute.bnk",
+    "midi_instrument_02_recorder.bnk",
+    "midi_instrument_03_snaredrum.bnk",
+    "midi_instrument_04_handdrum.bnk",
+    "midi_instrument_05_piatticymbals.bnk",
+    "midi_instrument_06_harp.bnk",
+    "midi_instrument_07_piano.bnk",
+    "midi_instrument_08_violin.bnk",
+    "midi_instrument_09_pandrum.bnk",
+    "midi_instrument_10_proguitar.bnk",
+    "midi_instrument_11_proflute.bnk",
+    "midi_instrument_13_prodrumset.bnk",
+    "midi_instrument_14_probasselectric.bnk",
+    "midi_instrument_15_probasscontra.bnk",
+    "midi_instrument_16_proharp.bnk",
+    "midi_instrument_17_propiano.bnk",
+    "midi_instrument_18_proviolin.bnk",
+    "midi_instrument_19_propandrum.bnk",
+    "midi_instrument_24_proguitarelectricclean.bnk",
+    "midi_instrument_25_proguitarelectricdrive.bnk",
+    "midi_instrument_26_proguitarelectricdist.bnk",
+    "midi_instrument_27_proclarinet.bnk",
+    "midi_instrument_28_prohorn.bnk",
+    "midi_instrument_synth_saw_basic.bnk",
+    "midi_instrument_synth_saw_stereo.bnk",
+    "midi_instrument_synth_saw_super.bnk",
+    "midi_instrument_synth_saw_superoct.bnk",
+    "midi_instrument_synth_sine_basic.bnk",
+    "midi_instrument_synth_sine_stereo.bnk",
+    "midi_instrument_synth_sine_super.bnk",
+    "midi_instrument_synth_sine_superoct.bnk",
+    "midi_instrument_synth_square_basic.bnk",
+    "midi_instrument_synth_square_stereo.bnk",
+    "midi_instrument_synth_square_super.bnk",
+    "midi_instrument_synth_square_superoct.bnk",
+    "midi_instrument_synth_triangle_basic.bnk",
+    "midi_instrument_synth_triangle_stereo.bnk",
+    "midi_instrument_synth_triangle_super.bnk",
+    "midi_instrument_synth_triangle_superoct.bnk",
 };
-
-const int SE_NUM_INSTRUMENTS = sizeof(SE_INSTRUMENTS) / sizeof(SE_INSTRUMENTS[0]);
+static const int SE_NUM_TARGET_BNKS = sizeof(SE_TARGET_BNKS) / sizeof(SE_TARGET_BNKS[0]);
 
 /* ---- Platform helpers ---- */
 
@@ -106,6 +106,281 @@ int se_dir_exists(const char *path)
 {
     struct stat st;
     return stat(path, &st) == 0 && (st.st_mode & S_IFDIR);
+}
+
+/* ---- PAZ index scanning ---- */
+
+/* Get the Nth null-terminated string from a buffer of consecutive strings. */
+static const char *paz_get_nth_string(const uint8_t *buf, size_t buf_len,
+                                       uint32_t index)
+{
+    uint32_t current = 0;
+    size_t pos = 0;
+    while (pos < buf_len) {
+        if (current == index)
+            return (const char *)(buf + pos);
+        while (pos < buf_len && buf[pos] != '\0')
+            pos++;
+        pos++; /* skip null terminator */
+        current++;
+    }
+    return NULL;
+}
+
+/*
+ * Scan a single PAZ file's index for target BNK filenames.
+ * Appends matches to entries/count (reallocating as needed).
+ * Returns number of matches found in this PAZ, or -1 on error.
+ */
+static int paz_scan_for_instruments(const char *paz_path, int paz_num,
+                                     const char **targets, int num_targets,
+                                     InstrumentEntry **entries, int *count,
+                                     int *capacity)
+{
+    FILE *f = fopen(paz_path, "rb");
+    if (!f) return -1;
+
+    /* Read 12-byte PAZ header */
+    uint8_t hdr[12];
+    if (fread(hdr, 1, 12, f) != 12) {
+        fclose(f);
+        return -1;
+    }
+    /* uint32_t paz_hash = LE32(hdr+0); -- unused */
+    uint32_t files_count  = (uint32_t)hdr[4]  | ((uint32_t)hdr[5]  << 8)
+                          | ((uint32_t)hdr[6]  << 16) | ((uint32_t)hdr[7]  << 24);
+    uint32_t names_length = (uint32_t)hdr[8]  | ((uint32_t)hdr[9]  << 8)
+                          | ((uint32_t)hdr[10] << 16) | ((uint32_t)hdr[11] << 24);
+
+    if (files_count == 0 || files_count > 100000) {
+        fclose(f);
+        return 0;
+    }
+
+    /* Read file entry table (24 bytes per entry) */
+    size_t entries_size = (size_t)files_count * 24;
+    uint8_t *raw_entries = (uint8_t *)malloc(entries_size);
+    if (!raw_entries) { fclose(f); return -1; }
+    if (fread(raw_entries, 1, entries_size, f) != entries_size) {
+        free(raw_entries);
+        fclose(f);
+        return -1;
+    }
+
+    /* Read and decrypt names block */
+    uint8_t *names_buf = NULL;
+    size_t names_buf_len = 0;
+    if (names_length > 0 && names_length < 10 * 1024 * 1024) {
+        names_buf = (uint8_t *)malloc(names_length);
+        if (!names_buf) { free(raw_entries); fclose(f); return -1; }
+        if (fread(names_buf, 1, names_length, f) != names_length) {
+            free(names_buf);
+            free(raw_entries);
+            fclose(f);
+            return -1;
+        }
+        ice_decrypt(names_buf, names_length);
+        names_buf_len = names_length;
+    }
+    fclose(f);
+
+    int found = 0;
+
+    for (uint32_t i = 0; i < files_count; i++) {
+        const uint8_t *e = raw_entries + (size_t)i * 24;
+        /* uint32_t file_hash  = LE32(e+0); -- unused */
+        uint32_t folder_num    = (uint32_t)e[4]  | ((uint32_t)e[5]  << 8)
+                               | ((uint32_t)e[6]  << 16) | ((uint32_t)e[7]  << 24);
+        uint32_t file_num      = (uint32_t)e[8]  | ((uint32_t)e[9]  << 8)
+                               | ((uint32_t)e[10] << 16) | ((uint32_t)e[11] << 24);
+        uint32_t offset        = (uint32_t)e[12] | ((uint32_t)e[13] << 8)
+                               | ((uint32_t)e[14] << 16) | ((uint32_t)e[15] << 24);
+        uint32_t comp_size     = (uint32_t)e[16] | ((uint32_t)e[17] << 8)
+                               | ((uint32_t)e[18] << 16) | ((uint32_t)e[19] << 24);
+        uint32_t orig_size     = (uint32_t)e[20] | ((uint32_t)e[21] << 8)
+                               | ((uint32_t)e[22] << 16) | ((uint32_t)e[23] << 24);
+
+        (void)folder_num; /* we only match on filename, not folder path */
+
+        const char *fname = paz_get_nth_string(names_buf, names_buf_len, file_num);
+        if (!fname) continue;
+
+        /* Check against target list */
+        for (int t = 0; t < num_targets; t++) {
+            if (strcmp(fname, targets[t]) == 0) {
+                /* Grow array if needed */
+                if (*count >= *capacity) {
+                    int new_cap = *capacity ? *capacity * 2 : 64;
+                    InstrumentEntry *tmp = (InstrumentEntry *)realloc(
+                        *entries, (size_t)new_cap * sizeof(InstrumentEntry));
+                    if (!tmp) goto cleanup;
+                    *entries = tmp;
+                    *capacity = new_cap;
+                }
+                InstrumentEntry *inst = &(*entries)[*count];
+                inst->paz_num   = paz_num;
+                inst->offset    = (int64_t)offset;
+                inst->comp_size = (int64_t)comp_size;
+                inst->orig_size = (int64_t)orig_size;
+                inst->filename  = targets[t]; /* points to static string */
+                (*count)++;
+                found++;
+                break;
+            }
+        }
+    }
+
+cleanup:
+    free(names_buf);
+    free(raw_entries);
+    return found;
+}
+
+/*
+ * Check if a directory contains any PAD*.PAZ files.
+ * Returns 1 if found, 0 otherwise.
+ */
+int se_has_paz_files(const char *dir)
+{
+#ifdef _WIN32
+    char pattern[4096];
+    snprintf(pattern, sizeof(pattern), "%s\\PAD*.PAZ", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    FindClose(h);
+    return 1;
+#else
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (strncmp(ent->d_name, "PAD", 3) == 0 &&
+            strstr(ent->d_name, ".PAZ") != NULL) {
+            closedir(d);
+            return 1;
+        }
+    }
+    closedir(d);
+    return 0;
+#endif
+}
+
+/*
+ * Build a dynamic instrument index by scanning PAZ files in paz_dir.
+ * Returns 0 on success, -1 on error.
+ * Caller must free(*entries_out) when done.
+ */
+static int se_build_instrument_index(const char *paz_dir,
+                                      InstrumentEntry **entries_out,
+                                      int *count_out,
+                                      SampleExtractProgressFn progress_cb,
+                                      void *ctx)
+{
+    *entries_out = NULL;
+    *count_out = 0;
+    int capacity = 0;
+
+    ice_init();
+
+    /* Scan PAZ files looking for target BNKs.
+     * Sound BNKs are known to live in PAZ 10100-10200 range.
+     * Try that first; only do a full directory scan as fallback. */
+    for (int pass = 0; pass < 2 && *count_out < SE_NUM_TARGET_BNKS; pass++) {
+        if (pass == 0) {
+            /* Fast pass: scan only the sound PAZ range */
+            for (int paz_num = 10100; paz_num <= 10200; paz_num++) {
+                char paz_path[4096];
+#ifdef _WIN32
+                snprintf(paz_path, sizeof(paz_path), "%s\\PAD%05d.PAZ",
+                         paz_dir, paz_num);
+#else
+                snprintf(paz_path, sizeof(paz_path), "%s/PAD%05d.PAZ",
+                         paz_dir, paz_num);
+#endif
+                struct stat st;
+                if (stat(paz_path, &st) != 0) continue;
+
+                paz_scan_for_instruments(paz_path, paz_num,
+                                          SE_TARGET_BNKS, SE_NUM_TARGET_BNKS,
+                                          entries_out, count_out, &capacity);
+                if (*count_out >= SE_NUM_TARGET_BNKS) break;
+            }
+        } else {
+            /* Slow fallback: scan all PAZ files in the directory */
+            if (progress_cb)
+                progress_cb(0, 0, "Scanning all archives (fallback)...", ctx);
+#ifdef _WIN32
+            char pattern[4096];
+            snprintf(pattern, sizeof(pattern), "%s\\PAD*.PAZ", paz_dir);
+            WIN32_FIND_DATAA fd;
+            HANDLE h = FindFirstFileA(pattern, &fd);
+            if (h == INVALID_HANDLE_VALUE) continue;
+            do {
+                int paz_num = 0;
+                if (sscanf(fd.cFileName, "PAD%d", &paz_num) != 1) continue;
+                /* Skip range already scanned */
+                if (paz_num >= 10100 && paz_num <= 10200) continue;
+
+                if (progress_cb) {
+                    char scan_msg[128];
+                    snprintf(scan_msg, sizeof(scan_msg),
+                             "Scanning %s", fd.cFileName);
+                    progress_cb(0, 0, scan_msg, ctx);
+                }
+
+                char paz_path[4096];
+                snprintf(paz_path, sizeof(paz_path),
+                         "%s\\%s", paz_dir, fd.cFileName);
+                paz_scan_for_instruments(paz_path, paz_num,
+                                          SE_TARGET_BNKS, SE_NUM_TARGET_BNKS,
+                                          entries_out, count_out, &capacity);
+                if (*count_out >= SE_NUM_TARGET_BNKS) break;
+            } while (FindNextFileA(h, &fd));
+            FindClose(h);
+#else
+            DIR *d = opendir(paz_dir);
+            if (!d) continue;
+            struct dirent *ent;
+            while ((ent = readdir(d)) != NULL) {
+                int paz_num = 0;
+                if (sscanf(ent->d_name, "PAD%d", &paz_num) != 1) continue;
+                if (!strstr(ent->d_name, ".PAZ")) continue;
+                if (paz_num >= 10100 && paz_num <= 10200) continue;
+
+                if (progress_cb) {
+                    char scan_msg[128];
+                    snprintf(scan_msg, sizeof(scan_msg),
+                             "Scanning %s", ent->d_name);
+                    progress_cb(0, 0, scan_msg, ctx);
+                }
+
+                char paz_path[4096];
+                snprintf(paz_path, sizeof(paz_path),
+                         "%s/%s", paz_dir, ent->d_name);
+                paz_scan_for_instruments(paz_path, paz_num,
+                                          SE_TARGET_BNKS, SE_NUM_TARGET_BNKS,
+                                          entries_out, count_out, &capacity);
+                if (*count_out >= SE_NUM_TARGET_BNKS) break;
+            }
+            closedir(d);
+#endif
+        }
+    }
+
+    if (*count_out == 0) {
+        fprintf(stderr, "Error: no instrument BNK files found in PAZ archives\n");
+        free(*entries_out);
+        *entries_out = NULL;
+        return -1;
+    }
+
+    if (*count_out < SE_NUM_TARGET_BNKS) {
+        fprintf(stderr, "Warning: found %d/%d instruments in PAZ archives\n",
+                *count_out, SE_NUM_TARGET_BNKS);
+    }
+
+    return 0;
 }
 
 /* ---- BDO decompression ---- */
@@ -407,10 +682,18 @@ int extract_all_samples(const char *paz_dir, const char *out_dir,
     ice_init();
     se_make_dirs(out_dir);
 
+    /* Build instrument index dynamically from PAZ file indices */
+    InstrumentEntry *instruments = NULL;
+    int num_instruments = 0;
+    if (se_build_instrument_index(paz_dir, &instruments, &num_instruments,
+                                   progress_cb, ctx) != 0) {
+        return -1;
+    }
+
     int total_samples = 0;
 
-    for (int i = 0; i < SE_NUM_INSTRUMENTS; i++) {
-        const InstrumentEntry *inst = &SE_INSTRUMENTS[i];
+    for (int i = 0; i < num_instruments; i++) {
+        const InstrumentEntry *inst = &instruments[i];
 
         /* Derive instrument name from filename (strip .bnk) */
         char inst_name[256];
@@ -420,7 +703,7 @@ int extract_all_samples(const char *paz_dir, const char *out_dir,
 
         /* Report progress */
         if (progress_cb)
-            progress_cb(i + 1, SE_NUM_INSTRUMENTS, inst_name, ctx);
+            progress_cb(i + 1, num_instruments, inst_name, ctx);
 
         /* Create output directory */
         char inst_dir[4096];
@@ -482,5 +765,6 @@ int extract_all_samples(const char *paz_dir, const char *out_dir,
         free(wems);
     }
 
+    free(instruments);
     return total_samples;
 }

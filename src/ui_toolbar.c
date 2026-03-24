@@ -1,4 +1,5 @@
 #include "ui_toolbar.h"
+#include "platform.h"
 #include "app.h"
 #include "audio.h"
 #include "bdo_format.h"
@@ -168,7 +169,7 @@ static void link_callback(void *userdata, const char *const *filelist, int filte
     if (!filelist || !filelist[0]) return;
 
     #define LINK_TOKEN_SIZE 72
-    FILE *f = fopen(filelist[0], "rb");
+    FILE *f = fopen_utf8(filelist[0], "rb");
     if (!f) return;
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
