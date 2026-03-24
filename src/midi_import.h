@@ -20,6 +20,13 @@ typedef struct {
     NoteArray notes;
 } MidiChannel;
 
+typedef enum {
+    VEL_MODE_RAW,       /* keep original MIDI velocities */
+    VEL_MODE_RESCALE,   /* rescale to min-max range */
+    VEL_MODE_LAYERED,   /* map to BDO-optimized levels [80, 90, 100, 121] */
+    VEL_MODE_COUNT
+} VelMode;
+
 typedef struct {
     int         num_channels;
     MidiChannel channels[MIDI_MAX_CHANNELS];
@@ -29,6 +36,8 @@ typedef struct {
     int         tempo_changes;
     bool        combine_all;
     uint8_t     combine_inst_id;
+    VelMode     vel_mode;
+    int         vel_min, vel_max;    /* for VEL_MODE_RESCALE */
 } MidiImportData;
 
 /* parse MIDI into channel data for the import dialog */

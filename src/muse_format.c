@@ -1,6 +1,7 @@
 #include "muse_format.h"
 #include "app.h"
 #include "model.h"
+#include "platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,7 +49,7 @@ static void write_json_string(FILE *f, const char *s) {
 /* --- save --- */
 
 int muse_save(const char *path, const MuseApp *app) {
-    FILE *f = fopen(path, "w");
+    FILE *f = fopen_utf8(path, "w");
     if (!f) return -1;
 
     const MuseProject *p = &app->project;
@@ -190,7 +191,7 @@ static const char *jbool(const char *p, bool *out) {
 /* --- load --- */
 
 int muse_load(const char *path, MuseApp *app) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen_utf8(path, "rb");
     if (!f) return -1;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);

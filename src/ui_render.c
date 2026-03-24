@@ -427,7 +427,8 @@ void draw_vline(SDL_Renderer *r, float x, float y1, float y2,
     SDL_RenderLine(r, x, y1, x, y2);
 }
 
-/* AA rounded rect - scanline coverage for smooth corners. */
+/* AA rounded rect - scanline coverage for smooth corners.
+   This was annoying to get right but the result looks great. */
 
 static void aa_rounded_rect_fill(SDL_Renderer *r, float x, float y, float w, float h,
                                  float rad, uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca) {

@@ -43,7 +43,9 @@
 #define KEY_HEIGHT_MIN      4
 #define KEY_HEIGHT_MAX      40
 #define HEADER_HEIGHT       24
-#define VEL_PANE_H          80
+#define VEL_PANE_H_DEFAULT  80
+#define VEL_PANE_H_MIN      40
+#define VEL_PANE_H_MAX      300
 #define BEAT_WIDTH_DEFAULT  120
 
 #define PITCH_MIN           12   /* C0  */

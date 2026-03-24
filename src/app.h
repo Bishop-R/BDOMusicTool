@@ -62,13 +62,26 @@ typedef struct MuseApp {
     /* erase sweep (right-click drag or erase tool drag) */
     bool   erase_sweeping;
 
-    /* velocity pane drag */
+    /* velocity pane */
+    float  vel_pane_h;           /* current height (resizable) */
+    bool   vel_resize_dragging;  /* dragging the top edge to resize */
+    float  vel_resize_start_y;   /* mouse Y at drag start */
+    float  vel_resize_start_h;   /* pane height at drag start */
     bool   vel_dragging;
     int    vel_drag_note_idx;
     float  vel_drag_start_y;
     int    vel_drag_orig_vel;
     bool   vel_brush_selecting; /* shift+drag brush sel in vel pane */
     bool   vel_set_dragging;    /* shift+right-drag: set stems to mouse y */
+    float  vel_set_mouse_x;     /* current mouse pos during set-drag */
+    float  vel_set_mouse_y;
+    bool   vel_paint_dragging;  /* alt+right-drag: paint velocity on notes */
+    float  vel_paint_mouse_x;   /* current mouse pos for readout */
+    float  vel_paint_mouse_y;
+    float  vel_paint_anchor_x;  /* X where drag started */
+    int    vel_paint_orig_vel;   /* velocity at drag start */
+    int    vel_paint_note_idx;   /* note being edited */
+    int    vel_paint_last_vel;   /* current velocity (for readout) */
     bool   vel_group_dragging;  /* dragging vel-selected group */
     int    vel_group_drag_base; /* base vel at drag start */
 
@@ -125,7 +138,7 @@ typedef struct MuseApp {
     int     move_orig_count;
 
     /* inline text editing */
-    int    edit_field;    /* 0=none, 1=bpm, 2=measures, 3=filename */
+    int    edit_field;    /* 0=none, 1=bpm, 2=measures, 3=filename, 4-8=vel params */
     char   edit_buf[64];
     int    edit_cursor;
 
@@ -133,6 +146,9 @@ typedef struct MuseApp {
     UiRect _tb_bpm_entry;
     UiRect _tb_meas_entry;
     UiRect _tb_ts_entry;
+
+    /* midi dialog velocity param entry rects (edit_field 4-8) */
+    UiRect _vel_param_rects[5]; /* 0=min, 1=max, 2=floor, 3=step_base, 4=step_size */
 
     /* dropdown overlay */
     int    dropdown_open;       /* 0=none, 1=time_sig, 2=grid, 3=technique */

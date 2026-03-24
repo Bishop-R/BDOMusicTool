@@ -4,7 +4,7 @@
 
 #define MAX_UNDO 100
 
-/* project state for undo/redo */
+/* deep copy of the project state for undo/redo */
 typedef struct {
     MuseLayer *layers;
     int        num_layers, active_layer;

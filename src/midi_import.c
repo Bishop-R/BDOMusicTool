@@ -1,5 +1,6 @@
 #include "midi_import.h"
 #include "instruments.h"
+#include "platform.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -127,10 +128,45 @@ static void octave_shift_notes(NoteArray *na) {
         MuseNote *n = &na->notes[i];
         while (n->pitch < 24 && n->pitch + 12 <= 108) n->pitch += 12;
         while (n->pitch > 108 && n->pitch - 12 >= 24) n->pitch -= 12;
-        /* hard clamp if octave shifting wasn't enough */
         if (n->pitch < 24) n->pitch = 24;
         if (n->pitch > 108) n->pitch = 108;
     }
+}
+
+/* GM drum (35-81) -> BDO Drum Set (48-64) mapping */
+static uint8_t gm_to_bdo_drum(uint8_t gm) {
+    switch (gm) {
+    case 35: case 36: return 48; /* Kick */
+    case 37:          return 51; /* Side Stick -> Rim Shot */
+    case 38: case 40: return 50; /* Snare -> Snare Hit */
+    case 39:          return 52; /* Clap -> Snare Flam */
+    case 41:          return 59; /* Low Tom -> Tom 4 */
+    case 42:          return 54; /* HiHat Closed */
+    case 43:          return 57; /* Low Tom -> Tom 3 */
+    case 44:          return 56; /* HiHat Pedal */
+    case 45:          return 55; /* Mid Tom -> Tom 2 */
+    case 46:          return 58; /* HiHat Open */
+    case 47:          return 53; /* Mid Tom -> Tom 1 */
+    case 48:          return 60; /* High Tom -> Tom 5 */
+    case 49: case 57: return 61; /* Crash */
+    case 50:          return 53; /* High Tom -> Tom 1 */
+    case 51: case 59: return 62; /* Ride */
+    case 52:          return 61; /* Chinese Cym -> Crash */
+    case 53:          return 62; /* Ride Bell -> Ride */
+    case 54:          return 61; /* Tambourine -> Crash */
+    case 55:          return 61; /* Splash -> Crash */
+    case 56:          return 51; /* Cowbell -> Rim Shot */
+    case 58:          return 61; /* Vibraslap -> Crash */
+    default:
+        if (gm < 48) return 48; /* below range -> kick */
+        if (gm > 64) return 62; /* above range -> ride */
+        return gm; /* already in BDO range */
+    }
+}
+
+static void remap_drum_notes(NoteArray *na) {
+    for (int i = 0; i < na->count; i++)
+        na->notes[i].pitch = gm_to_bdo_drum(na->notes[i].pitch);
 }
 
 /* tempo map entry for tick-to-ms conversion */
@@ -154,7 +190,7 @@ static double tick_to_ms(uint32_t tick) {
 }
 
 MidiImportData *midi_parse(const char *path) {
-    FILE *f = fopen(path, "rb");
+    FILE *f = fopen_utf8(path, "rb");
     if (!f) return NULL;
 
     fseek(f, 0, SEEK_END);
@@ -253,9 +289,15 @@ MidiImportData *midi_parse(const char *path) {
             scan_off = trk_end;
         }
     }
-    /* use the first tempo as BPM (just for the visual grid) */
-    if (g_tempo_map_count >= 1) {
-        uint32_t first_uspq = (uint32_t)(g_tempo_map[0].us_per_tick * tpqn);
+    /* use the first real tempo event as BPM (fall back to default if none) */
+    {
+        /* find the last tempo event at tick 0, or the first one overall */
+        int best = 0;
+        for (int i = 1; i < g_tempo_map_count; i++) {
+            if (g_tempo_map[i].tick == 0) best = i;
+            else break;
+        }
+        uint32_t first_uspq = (uint32_t)(g_tempo_map[best].us_per_tick * tpqn);
         if (first_uspq > 0)
             mid->bpm = (uint16_t)(60000000.0 / first_uspq);
     }
@@ -469,7 +511,10 @@ MidiImportData *midi_parse(const char *path) {
         slots[i].note_count = slots[i].notes.count;
         if (slots[i].note_count > 0) {
             /* shift into BDO's pitch range */
-            octave_shift_notes(&slots[i].notes);
+            if (slots[i].is_percussion)
+                remap_drum_notes(&slots[i].notes);
+            else
+                octave_shift_notes(&slots[i].notes);
 
             uint8_t gm_prog = slot_has_program[i] ? slot_program[i] : 0;
             const char *perc_label = slots[i].is_percussion ? "Drums" : gm_program_name(gm_prog);
@@ -488,8 +533,84 @@ MidiImportData *midi_parse(const char *path) {
     /* default combine instrument to Flor. Piano */
     mid->combine_inst_id = 0x11;
 
+    /* default velocity mode */
+    mid->vel_mode = VEL_MODE_LAYERED;
+    mid->vel_min = 80;
+    mid->vel_max = 127;
+
     free(data);
     return mid;
+}
+
+/* ---- Velocity processing ---- */
+
+static void vel_rescale(NoteArray *na, int vmin, int vmax) {
+    int src_min = 127, src_max = 0;
+    for (int i = 0; i < na->count; i++) {
+        if (na->notes[i].ntype != 0) continue;
+        if (na->notes[i].vel < src_min) src_min = na->notes[i].vel;
+        if (na->notes[i].vel > src_max) src_max = na->notes[i].vel;
+    }
+    if (src_min == src_max) {
+        int flat = (vmin + vmax) / 2;
+        for (int i = 0; i < na->count; i++)
+            if (na->notes[i].ntype == 0) na->notes[i].vel = (uint8_t)flat;
+        return;
+    }
+    for (int i = 0; i < na->count; i++) {
+        if (na->notes[i].ntype != 0) continue;
+        float scaled = (float)vmin + (float)(na->notes[i].vel - src_min)
+                     / (float)(src_max - src_min) * (float)(vmax - vmin);
+        int v = (int)(scaled + 0.5f);
+        if (v < 1) v = 1; if (v > 127) v = 127;
+        na->notes[i].vel = (uint8_t)v;
+    }
+}
+
+static const int BDO_VEL_LEVELS[] = { 80, 90, 100, 121 };
+#define BDO_VEL_NLEVELS 4
+
+static void vel_layered(NoteArray *na) {
+    /* collect unique velocities */
+    uint8_t seen[128] = {0};
+    int unique[128], nunique = 0;
+    for (int i = 0; i < na->count; i++) {
+        if (na->notes[i].ntype != 0) continue;
+        if (!seen[na->notes[i].vel]) {
+            seen[na->notes[i].vel] = 1;
+            unique[nunique++] = na->notes[i].vel;
+        }
+    }
+    if (nunique == 0) return;
+    /* sort */
+    for (int i = 0; i < nunique - 1; i++)
+        for (int j = i + 1; j < nunique; j++)
+            if (unique[j] < unique[i]) { int t = unique[i]; unique[i] = unique[j]; unique[j] = t; }
+    /* build map: distribute evenly across BDO levels */
+    uint8_t vel_map[128] = {0};
+    if (nunique == 1) {
+        vel_map[unique[0]] = (uint8_t)BDO_VEL_LEVELS[BDO_VEL_NLEVELS / 2];
+    } else {
+        for (int i = 0; i < nunique; i++) {
+            int idx = (int)((float)i / (float)(nunique - 1) * (float)(BDO_VEL_NLEVELS - 1) + 0.5f);
+            vel_map[unique[i]] = (uint8_t)BDO_VEL_LEVELS[idx];
+        }
+    }
+    /* apply */
+    for (int i = 0; i < na->count; i++) {
+        if (na->notes[i].ntype != 0) continue;
+        if (vel_map[na->notes[i].vel])
+            na->notes[i].vel = vel_map[na->notes[i].vel];
+    }
+}
+
+static void apply_vel_mode(MidiImportData *mid, NoteArray *na) {
+    switch (mid->vel_mode) {
+        case VEL_MODE_RAW:     break;
+        case VEL_MODE_RESCALE: vel_rescale(na, mid->vel_min, mid->vel_max); break;
+        case VEL_MODE_LAYERED: vel_layered(na); break;
+        default: break;
+    }
 }
 
 void midi_apply(MidiImportData *mid, MuseProject *out) {
@@ -500,7 +621,7 @@ void midi_apply(MidiImportData *mid, MuseProject *out) {
     if (mid->time_sig >= 2 && mid->time_sig <= 8)
         out->time_sig = mid->time_sig;
 
-    /* convert tick positions to ms using the tempo map */
+    /* convert tick positions to ms using the tempo map, then compress if needed */
     for (int i = 0; i < mid->num_channels; i++) {
         MidiChannel *ch = &mid->channels[i];
         for (int n = 0; n < ch->notes.count; n++) {
@@ -514,6 +635,13 @@ void midi_apply(MidiImportData *mid, MuseProject *out) {
             }
             if (note->dur < 1) note->dur = 1;
         }
+    }
+
+    /* apply velocity processing */
+    for (int i = 0; i < mid->num_channels; i++) {
+        MidiChannel *ch = &mid->channels[i];
+        if (ch->note_count == 0 || ch->is_percussion) continue;
+        apply_vel_mode(mid, &ch->notes);
     }
 
     for (int i = 0; i < mid->num_channels; i++) {
