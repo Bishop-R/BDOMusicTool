@@ -138,7 +138,7 @@ void ui_piano_roll_render(MuseApp *app) {
     if (vis_pitch_hi < PITCH_MAX) vis_pitch_hi++;
     if (vis_pitch_lo > PITCH_MIN) vis_pitch_lo--;
 
-    /* row backgrounds - fade out when entering 3D mode */
+    /* row backgrounds - alternating white/black key rows for FL-style clarity */
     {
         uint8_t row_a = (uint8_t)(0xFF * fmaxf(1.0f - persp_t * 3.0f, 0.0f));
         if (row_a > 0) {
@@ -153,15 +153,17 @@ void ui_piano_roll_render(MuseApp *app) {
 
                 if (oor)
                     draw_filled_rect(r, rx, y0, rw, h, COL_OOR_DARK, row_a);
-                else if (!is_black_key(pitch))
-                    draw_filled_rect(r, rx, y0, rw, h, 0x1A, 0x1A, 0x1D, row_a);
+                else if (is_black_key(pitch))
+                    draw_filled_rect(r, rx, y0, rw, h, 0x22, 0x23, 0x28, row_a);
+                else
+                    draw_filled_rect(r, rx, y0, rw, h, 0x2A, 0x2C, 0x32, row_a);
 
-                /* Horizontal grid lines */
+                /* Horizontal grid lines — octave boundaries are bolder */
                 int sem = pitch % 12;
                 if (sem == 0)
                     draw_hline(r, rx, rx + rw, y0, COL_BORDER);
                 else
-                    draw_hline(r, rx, rx + rw, y0, COL_GRID_SUB);
+                    draw_hline(r, rx, rx + rw, y0, 0x30, 0x32, 0x38);
             }
         }
     }
@@ -302,14 +304,27 @@ void ui_piano_roll_render(MuseApp *app) {
     const float focal = 400.0f;
     float note_lh = text_line_height(6.0f);
 
+    /* Draw notes in two passes: inactive layers first, active layer on top */
+    for (int pass = 0; pass < 2; pass++) {
     for (int li = 0; li < app->project.num_layers; li++) {
         MuseLayer *ly = &app->project.layers[li];
         if (ly->muted) continue;
         bool is_active_layer = (li == app->project.active_layer);
+        /* pass 0: inactive layers only, pass 1: active layer only */
+        if (pass == 0 && is_active_layer) continue;
+        if (pass == 1 && !is_active_layer) continue;
 
+        /* Within active layer, draw inactive sublayers first, active sublayer on top */
+        for (int sub_pass = 0; sub_pass < 2; sub_pass++) {
         for (int si = 0; si < ly->num_sublayers; si++) {
-            NoteArray *na = &ly->sublayers[si];
             bool is_active_sub = is_active_layer && (si == ly->active_sub);
+            if (is_active_layer) {
+                if (sub_pass == 0 && is_active_sub) continue;
+                if (sub_pass == 1 && !is_active_sub) continue;
+            } else {
+                if (sub_pass == 1) continue; /* inactive layers: one pass only */
+            }
+            NoteArray *na = &ly->sublayers[si];
             /* dim_mode: 0=active sublayer, 1=inactive sub, 2=inactive layer */
             int dim_mode = is_active_sub ? 0 : (is_active_layer ? 1 : 2);
 
@@ -451,7 +466,7 @@ void ui_piano_roll_render(MuseApp *app) {
                     bl_x = x2_l; bl_y = y2_b;
                 }
 
-                /* Draw perspective quad with vertex colors for depth shading */
+                /* Draw note body */
                 {
                     float rn = dr / 255.0f * near_bright;
                     float gn = dg / 255.0f * near_bright;
@@ -459,11 +474,11 @@ void ui_piano_roll_render(MuseApp *app) {
                     float rf = dr / 255.0f * far_bright;
                     float gf = dg / 255.0f * far_bright;
                     float bf = db / 255.0f * far_bright;
-                    SDL_FColor cn = { rn, gn, bn, 1.0f };
-                    SDL_FColor cf = { rf, gf, bf, 1.0f };
 
                     if (persp_t > 0.1f) {
-                        /* per-edge normal AA fringe */
+                        /* 3D mode: perspective quad with vertex colors + AA fringe */
+                        SDL_FColor cn = { rn, gn, bn, 1.0f };
+                        SDL_FColor cf = { rf, gf, bf, 1.0f };
                         float aa = 0.7f;
                         float px[4] = {tl_x, tr_x, br_x, bl_x};
                         float py[4] = {tl_y, tr_y, br_y, bl_y};
@@ -484,12 +499,10 @@ void ui_piano_roll_render(MuseApp *app) {
                         }
                         SDL_FColor c[4] = {cn, cf, cf, cn};
                         SDL_FColor c0[4] = {{rn,gn,bn,0},{rf,gf,bf,0},{rf,gf,bf,0},{rn,gn,bn,0}};
-                        /* inner solid */
                         SDL_Vertex iv[4];
                         for (int j=0;j<4;j++) { iv[j].position.x=px[j]-ox[j]; iv[j].position.y=py[j]-oy[j]; iv[j].color=c[j]; }
                         int ii[6]={0,1,2,0,2,3};
                         SDL_RenderGeometry(r,NULL,iv,4,ii,6);
-                        /* fringe strips */
                         for (int ei=0;ei<4;ei++) {
                             int n2=(ei+1)%4;
                             SDL_Vertex fv[4]={
@@ -501,44 +514,90 @@ void ui_piano_roll_render(MuseApp *app) {
                             int fi[6]={0,1,2,0,2,3};
                             SDL_RenderGeometry(r,NULL,fv,4,fi,6);
                         }
-                    } else {
-                        SDL_Vertex verts[4] = {
-                            { .position={tl_x, tl_y}, .color=cn },
-                            { .position={tr_x, tr_y}, .color=cf },
-                            { .position={br_x, br_y}, .color=cf },
-                            { .position={bl_x, bl_y}, .color=cn },
+                        /* Top edge highlight for depth */
+                        float ha = 0.15f * persp_t;
+                        SDL_FColor hn = {1, 1, 1, ha};
+                        SDL_FColor hf = {1, 1, 1, ha * far_bright};
+                        SDL_Vertex hv[4] = {
+                            { .position={tl_x, tl_y},     .color=hn },
+                            { .position={tr_x, tr_y},     .color=hf },
+                            { .position={tr_x, tr_y + 1}, .color=hf },
+                            { .position={tl_x, tl_y + 1}, .color=hn },
                         };
-                        int idx[6] = {0, 1, 2, 0, 2, 3};
-                        SDL_RenderGeometry(r, NULL, verts, 4, idx, 6);
+                        int hi2[6] = {0, 1, 2, 0, 2, 3};
+                        SDL_RenderGeometry(r, NULL, hv, 4, hi2, 6);
+                        /* 3D outline */
+                        if (note->selected)
+                            SDL_SetRenderDrawColor(r, COL_GOLD_BRIGHT, 0xFF);
+                        else {
+                            uint8_t oa = (uint8_t)(0x44 * far_bright);
+                            SDL_SetRenderDrawColor(r, 0x4A, 0x4C, 0x54, oa);
+                        }
+                        SDL_RenderLine(r, tl_x, tl_y, tr_x, tr_y);
+                        SDL_RenderLine(r, tr_x, tr_y, br_x, br_y);
+                        SDL_RenderLine(r, br_x, br_y, bl_x, bl_y);
+                        SDL_RenderLine(r, bl_x, bl_y, tl_x, tl_y);
+                    } else {
+                        /* 2D mode: note shape with square BL corner */
+                        float note_x = tl_x, note_y = tl_y;
+                        float note_w = tr_x - tl_x, note_h = bl_y - tl_y;
+                        float rad = (note_h > 8) ? 4.0f : (note_h > 4) ? 2.0f : 0.0f;
+                        int irad = (int)rad;
+
+                        /* Active note glow — additive bloom (real light emission) */
+                        bool note_sounding = app->playing && dim_mode == 0 &&
+                            note->start <= app->playhead_ms &&
+                            note->start + note->dur > app->playhead_ms;
+                        if (note_sounding) {
+                            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_ADD);
+                            for (int gi = 5; gi >= 1; gi--) {
+                                float gp = (float)gi;
+                                float falloff = 1.0f - (float)gi / 6.0f;
+                                falloff *= falloff;
+                                uint8_t ga = (uint8_t)(falloff * 30);
+                                draw_note_rect(r, note_x - gp, note_y - gp,
+                                               note_w + gp * 2, note_h + gp * 2, rad + gp,
+                                               (uint8_t)dr, (uint8_t)dg, (uint8_t)db, ga);
+                            }
+                            draw_note_rect(r, note_x - 1, note_y - 1,
+                                           note_w + 2, note_h + 2, rad + 1,
+                                           (uint8_t)dr, (uint8_t)dg, (uint8_t)db, 0x1C);
+                            SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+                        }
+
+                        /* border */
+                        if (note->selected)
+                            draw_note_rect(r, note_x - 1, note_y - 1, note_w + 2, note_h + 2, rad + 1,
+                                           COL_GOLD_BRIGHT, 0xFF);
+                        else if (rad > 0 && !note_sounding)
+                            draw_note_rect(r, note_x - 1, note_y - 1, note_w + 2, note_h + 2, rad + 1,
+                                           0x1A, 0x1C, 0x22, 0xA0);
+                        /* note body */
+                        {
+                            uint8_t nr, ng, nb;
+                            if (note_sounding) {
+                                int br2 = dr + (255 - dr) / 5; if (br2 > 255) br2 = 255;
+                                int bg2 = dg + (255 - dg) / 5; if (bg2 > 255) bg2 = 255;
+                                int bb2 = db + (255 - db) / 5; if (bb2 > 255) bb2 = 255;
+                                nr = (uint8_t)br2; ng = (uint8_t)bg2; nb = (uint8_t)bb2;
+                            } else {
+                                nr = (uint8_t)(rn * 255); ng = (uint8_t)(gn * 255); nb = (uint8_t)(bn * 255);
+                            }
+                            draw_note_rect(r, note_x, note_y, note_w, note_h, rad, nr, ng, nb, 0xFF);
+                        }
+                        /* subtle top highlight for depth */
+                        if (note_h > 6) {
+                            int hr = dr + (255 - dr) / 4;
+                            int hg = dg + (255 - dg) / 4;
+                            int hb = db + (255 - db) / 4;
+                            if (hr > 255) hr = 255;
+                            if (hg > 255) hg = 255;
+                            if (hb > 255) hb = 255;
+                            draw_filled_rect(r, note_x + irad, note_y, note_w - irad * 2, 1,
+                                             (uint8_t)hr, (uint8_t)hg, (uint8_t)hb, 0x50);
+                        }
                     }
                 }
-
-                /* Top edge highlight for 3D depth */
-                if (persp_t > 0.3f) {
-                    float ha = 0.15f * persp_t;
-                    SDL_FColor hn = {1, 1, 1, ha};
-                    SDL_FColor hf = {1, 1, 1, ha * far_bright};
-                    SDL_Vertex hv[4] = {
-                        { .position={tl_x, tl_y},     .color=hn },
-                        { .position={tr_x, tr_y},     .color=hf },
-                        { .position={tr_x, tr_y + 1}, .color=hf },
-                        { .position={tl_x, tl_y + 1}, .color=hn },
-                    };
-                    int hi[6] = {0, 1, 2, 0, 2, 3};
-                    SDL_RenderGeometry(r, NULL, hv, 4, hi, 6);
-                }
-
-                /* outline */
-                if (note->selected) {
-                    SDL_SetRenderDrawColor(r, COL_GOLD_BRIGHT, 0xFF);
-                } else {
-                    uint8_t oa = (persp_t > 0.5f) ? (uint8_t)(0x44 * far_bright) : 0x44;
-                    SDL_SetRenderDrawColor(r, 0x44, 0x43, 0x48, oa);
-                }
-                SDL_RenderLine(r, tl_x, tl_y, tr_x, tr_y);   /* top */
-                SDL_RenderLine(r, tr_x, tr_y, br_x, br_y);   /* right (far) */
-                SDL_RenderLine(r, br_x, br_y, bl_x, bl_y);   /* bottom */
-                SDL_RenderLine(r, bl_x, bl_y, tl_x, tl_y);   /* left (near) */
 
                 /* spawn firefly particles where the playhead crosses notes */
                 if (persp_t > 0.3f && app->playing &&
@@ -584,7 +643,6 @@ void ui_piano_roll_render(MuseApp *app) {
 
                 /* note label (fades out early in 3D to reduce clutter) */
                 if (nw >= 20 && nh_2d >= 10 && persp_t < 0.125f) {
-                    float label_alpha = 1.0f - fminf(persp_t * 8.0f, 1.0f);
                     char lbl[8];
                     int sem = note->pitch % 12;
                     int oct = note->pitch / 12 - 1 + (inst ? inst->oct_offset : 0);
@@ -597,13 +655,25 @@ void ui_piano_roll_render(MuseApp *app) {
                         snprintf(lbl, sizeof(lbl), "%s%d", NOTE_NAMES[sem], oct);
                     float fsz = 6.0f;
                     float label_y = ny + (nh_2d - note_lh) / 2.0f;
-                    uint8_t lc_base = (dim_mode == 0) ? 0x00 : 0x33;
-                    uint8_t lc = (uint8_t)(lc_base + (0xFF - lc_base) * (1.0f - label_alpha));
-                    draw_text(r, lbl, nx + 3, label_y, fsz, lc, lc, lc);
+                    float label_x = nx + 4;
+                    /* dark drop shadow for contrast */
+                    draw_text(r, lbl, label_x + 1, label_y + 1, fsz, 0x00, 0x00, 0x00);
+                    /* label in brightened note color */
+                    if (dim_mode == 0) {
+                        int lr = dr + (255 - dr) * 2 / 3; if (lr > 255) lr = 255;
+                        int lg = dg + (255 - dg) * 2 / 3; if (lg > 255) lg = 255;
+                        int lb = db + (255 - db) * 2 / 3; if (lb > 255) lb = 255;
+                        draw_text_bold(r, lbl, label_x, label_y, fsz,
+                                       (uint8_t)lr, (uint8_t)lg, (uint8_t)lb);
+                    } else {
+                        draw_text(r, lbl, label_x, label_y, fsz, 0x90, 0x90, 0x90);
+                    }
                 }
             }
         }
+        } /* end sub_pass loop */
     }
+    } /* end pass loop */
 
     /* box selection overlay - dashed gold rectangle */
     if (app->selecting) {
@@ -710,6 +780,7 @@ void ui_piano_roll_render(MuseApp *app) {
             /* Core line */
             draw_vline(r, px, ry, ry + rh, COL_PLAYHEAD);
             draw_vline(r, px + 1, ry, ry + rh, COL_PLAYHEAD);
+
         }
     }
 
@@ -785,12 +856,22 @@ void ui_piano_roll_render(MuseApp *app) {
             }
             draw_hgradient_rect(r, keys_x, y0, KEYS_WIDTH, h,
                                 r0, g0, b0, r1_c, g1_c, b1_c);
-        } else if (oor)
+        } else if (oor) {
             draw_filled_rect(r, keys_x, y0, KEYS_WIDTH, h, COL_OOR_BG, 0xFF);
-        else if (is_black_key(pitch))
+        } else if (is_black_key(pitch)) {
             draw_filled_rect(r, keys_x, y0, KEYS_WIDTH, h, COL_BLACK_KEY, 0xFF);
-        else
+            if (h > 3) {
+                draw_filled_rect(r, keys_x + 1, y0, KEYS_WIDTH - 2, 1, 0xFF, 0xFF, 0xFF, 0x1A);
+                draw_filled_rect(r, keys_x + 1, y0 + h - 1, KEYS_WIDTH - 2, 1, 0x00, 0x00, 0x00, 0x30);
+            }
+        } else {
             draw_filled_rect(r, keys_x, y0, KEYS_WIDTH, h, COL_WHITE_KEY, 0xFF);
+            if (h > 3) {
+                draw_filled_rect(r, keys_x + 1, y0, KEYS_WIDTH - 2, 1, 0xFF, 0xFF, 0xFF, 0x20);
+                draw_filled_rect(r, keys_x + 1, y0 + 1, KEYS_WIDTH - 2, 1, 0xFF, 0xFF, 0xFF, 0x0C);
+                draw_filled_rect(r, keys_x + 1, y0 + h - 1, KEYS_WIDTH - 2, 1, 0x00, 0x00, 0x00, 0x30);
+            }
+        }
 
         /* thin outline around each key */
         draw_rect_outline(r, keys_x, y0, (float)KEYS_WIDTH, (float)kh, COL_BG_DARK);
@@ -809,15 +890,22 @@ void ui_piano_roll_render(MuseApp *app) {
             float fsz = 7.0f;
             uint8_t tr, tg, tb;
             if (ap && !oor) {
-                /* Highlighted key: dark label for contrast (bg_dark) */
+                /* Highlighted key: dark label for contrast */
                 tr = 0x16; tg = 0x16; tb = 0x18;
             } else if (oor)           { tr = 0x33; tg = 0x33; tb = 0x35; }
-            else if (sem == 0) { tr = 0xD8; tg = 0xAD; tb = 0x70; }
-            else if (is_black_key(pitch)) { tr = 0x88; tg = 0x88; tb = 0x88; }
-            else               { tr = 0xCC; tg = 0xCC; tb = 0xCC; }
+            else if (sem == 0) {
+                /* C note: gold on black keys, dark gold on white keys */
+                if (is_black_key(pitch)) { tr = 0xD8; tg = 0xAD; tb = 0x70; }
+                else                     { tr = 0x8A; tg = 0x70; tb = 0x3A; }
+            }
+            else if (is_black_key(pitch)) { tr = 0x99; tg = 0x99; tb = 0x99; }
+            else               { tr = 0x44; tg = 0x46; tb = 0x4C; }
 
             if (!ap && inst && inst->is_drum && dname) {
-                tr = 0xDD; tg = 0xC3; tb = 0x9E;
+                if (is_black_key(pitch))
+                    { tr = 0xDD; tg = 0xC3; tb = 0x9E; }
+                else
+                    { tr = 0x7A; tg = 0x60; tb = 0x30; }
             }
 
             draw_text_right(r, lbl, keys_x + KEYS_WIDTH - 4,
@@ -830,7 +918,7 @@ void ui_piano_roll_render(MuseApp *app) {
     /* Fade piano keys during transition */
     if (persp_t > 0.01f) {
         uint8_t fa = (uint8_t)(fminf(persp_t * 3.0f, 1.0f) * 255);
-        draw_filled_rect(r, keys_x, ry, (float)KEYS_WIDTH, rh, 0x16, 0x16, 0x18, fa);
+        draw_filled_rect(r, keys_x, ry, (float)KEYS_WIDTH, rh, COL_BG_DARK, fa);
     }
     pop_clip(r);
     skip_piano_keys:;
@@ -839,20 +927,9 @@ void ui_piano_roll_render(MuseApp *app) {
     if (persp_t > 0.99f) goto skip_timeline_header;
     {
         float hdr_y = (float)(TRANSPORT_H + 2);
-        /* Corner canvas with collapse lip */
+        /* Corner canvas */
         draw_filled_rect(r, keys_x, hdr_y, (float)KEYS_WIDTH, HEADER_HEIGHT,
                          COL_BG_DARK, 0xFF);
-        /* Collapse lip tab */
-        {
-            float lip_w = CORNER_TAB_W;
-            float lip_x = keys_x + KEYS_WIDTH - lip_w;
-            draw_rounded_rect(r, lip_x, hdr_y, lip_w, HEADER_HEIGHT, 4,
-                             COL_BG, 0xFF);
-            /* Arrow: ◀ when open, ▶ when closed */
-            const char *arrow = app->left_panel_open ? "<" : ">";
-            draw_text_centered(r, arrow, lip_x + lip_w / 2, hdr_y + HEADER_HEIGHT / 2,
-                              6, COL_TEXT_DIM);
-        }
         draw_filled_rect(r, rx, hdr_y, rw, HEADER_HEIGHT, COL_BG_DARK, 0xFF);
 
         push_clip(r, rx, hdr_y, rw, HEADER_HEIGHT);
@@ -926,7 +1003,7 @@ void ui_piano_roll_render(MuseApp *app) {
         if (persp_t > 0.01f) {
             uint8_t fa = (uint8_t)(fminf(persp_t * 3.0f, 1.0f) * 255);
             draw_filled_rect(r, keys_x, hdr_y, (float)app->win_w - keys_x, HEADER_HEIGHT + 1,
-                             0x16, 0x16, 0x18, fa);
+                             COL_BG_DARK, fa);
         }
     }
     skip_timeline_header:;
@@ -1098,10 +1175,21 @@ void ui_piano_roll_render(MuseApp *app) {
                     line_r = (uint8_t)sr; line_g = (uint8_t)sg; line_b = (uint8_t)sb;
                 }
 
-                /* Stem (2px wide, starts below knob) */
+                /* Stem (2px wide, gradient: full color at knob → faded at bottom) */
                 float stem_cx = nx + 0.5f;
-                draw_vline(r, nx, y_top + 5, bottom_y, line_r, line_g, line_b);
-                draw_vline(r, nx + 1, y_top + 5, bottom_y, line_r, line_g, line_b);
+                {
+                    float st = y_top + 5, sb2 = bottom_y;
+                    SDL_FColor c_top = { line_r / 255.0f, line_g / 255.0f, line_b / 255.0f, 1.0f };
+                    SDL_FColor c_bot = { line_r / 255.0f, line_g / 255.0f, line_b / 255.0f, 0.15f };
+                    SDL_Vertex sv[4] = {
+                        { .position={nx,     st},  .color=c_top },
+                        { .position={nx + 2, st},  .color=c_top },
+                        { .position={nx + 2, sb2}, .color=c_bot },
+                        { .position={nx,     sb2}, .color=c_bot },
+                    };
+                    int si2[6] = {0,1,2,0,2,3};
+                    SDL_RenderGeometry(r, NULL, sv, 4, si2, 6);
+                }
 
                 /* Knob */
                 if (is_drag_target)
@@ -1166,6 +1254,12 @@ void ui_piano_roll_render(MuseApp *app) {
         draw_filled_rect(r, 0, lp_y, LEFT_PANEL_W, lp_h, COL_BG, 0xFF);
         draw_vline(r, (float)LEFT_PANEL_W - 1, lp_y,
                    (float)(app->win_h - STATUS_BAR_H), COL_BORDER);
+        /* soft shadow on the right edge of the left panel */
+        for (int si = 0; si < 5; si++) {
+            uint8_t sa = (uint8_t)(22 - si * 4);
+            draw_filled_rect(r, (float)LEFT_PANEL_W + si, lp_y, 1, lp_h,
+                             0x00, 0x00, 0x00, sa);
+        }
 
         push_clip(r, 0, lp_y, LEFT_PANEL_W, lp_h);
         /* leave some margin on the right so the scrollbar doesn't overlap content */
@@ -1178,23 +1272,47 @@ void ui_piano_roll_render(MuseApp *app) {
 
         /* --- INSTRUMENTS --- */
         cy += 10;
-        draw_text_bold(r, "INSTRUMENTS", 4, cy, 11, COL_GOLD);
-        cy += 28 + 5; /* header h=28, plus small gap to first instrument row */
+        draw_text_bold(r, "INSTRUMENTS", 8, cy, 11, COL_GOLD);
+        cy += 18;
+        draw_hline(r, 8, LEFT_PANEL_W - 12, cy, COL_BORDER);
+        cy += 10 + 5;
 
         for (int i = 0; i < app->project.num_layers; i++) {
             MuseLayer *ly = &app->project.layers[i];
             const MuseInstrument *ins = inst_by_id(ly->inst_id);
             bool sel = (i == app->project.active_layer);
 
-            /* separator line between instruments */
-            if (i > 0) {
-                cy += 2;
-                draw_hline(r, 4, LEFT_PANEL_W - 4, cy, COL_BORDER);
-                cy += 3; /* 2px above + 1px line + 2px below = pady=2 */
-            }
+            /* spacing between instruments */
+            if (i > 0)
+                cy += 12;
 
-            /* top row: icon, mute, solo, name */
+            /* Compute row height dynamically */
             float row_top = cy;
+            bool is_synth = (ly->inst_id == 0x14 || ly->inst_id == 0x18 ||
+                             ly->inst_id == 0x1C || ly->inst_id == 0x20);
+            int sub_tab_rows = (ly->num_sublayers + 2 + 4) / 5; /* +2 for +/-, 5 per row */
+            if (sub_tab_rows < 1) sub_tab_rows = 1;
+            float row_h = 28 + 28 + 2 + sub_tab_rows * 20 + (is_synth ? 24 : 0);
+
+            /* active layer highlight — raised 3D card, lit from above */
+            if (sel) {
+                float card_x = 2, card_y = cy - 4;
+                float card_w = LEFT_PANEL_W - 16, card_h = row_h + 8;
+
+                /* body — single gradient rounded rect, light top → dark bottom */
+                {
+                    /* COL_SURFACE is 0x38,0x3A,0x42 — lighten top, darken bottom */
+                    draw_rounded_rect_vgradient(r, card_x, card_y, card_w, card_h, 10,
+                                                0x40, 0x42, 0x4A, 0xFF,   /* top: lighter */
+                                                0x30, 0x32, 0x3A, 0xFF);  /* bottom: darker */
+                }
+                /* drop shadow below */
+                for (int si = 0; si < 6; si++) {
+                    uint8_t sa = (uint8_t)(30 - si * 5);
+                    draw_filled_rect(r, card_x + si, card_y + card_h + si, card_w - si * 2, 1,
+                                     0x00, 0x00, 0x00, sa);
+                }
+            }
 
             /* instrument icon, or color swatch if icon missing */
             {
@@ -1211,8 +1329,13 @@ void ui_piano_roll_render(MuseApp *app) {
             /* Mute */
             {
                 UiRect mute_rc = { 20, cy + 2, 24, 24 };
+                if (sel) /* button shadow on raised card */
+                    draw_rounded_rect(r, mute_rc.x + 1, mute_rc.y + 1, mute_rc.w, mute_rc.h, 4,
+                                      0x00, 0x00, 0x00, 0x28);
                 if (ly->muted)
                     draw_rounded_rect(r, mute_rc.x, mute_rc.y, mute_rc.w, mute_rc.h, 4, COL_ERROR, 0xFF);
+                else if (sel)
+                    draw_rounded_rect(r, mute_rc.x, mute_rc.y, mute_rc.w, mute_rc.h, 4, COL_SURFACE_ALT, 0xFF);
                 else
                     draw_rounded_rect(r, mute_rc.x, mute_rc.y, mute_rc.w, mute_rc.h, 4, COL_SURFACE, 0xFF);
                 draw_text_centered(r, "M", mute_rc.x + 12, mute_rc.y + 12, 9, COL_TEXT);
@@ -1221,8 +1344,13 @@ void ui_piano_roll_render(MuseApp *app) {
             /* Solo */
             {
                 UiRect solo_rc = { 46, cy + 2, 24, 24 };
+                if (sel)
+                    draw_rounded_rect(r, solo_rc.x + 1, solo_rc.y + 1, solo_rc.w, solo_rc.h, 4,
+                                      0x00, 0x00, 0x00, 0x28);
                 if (ly->solo)
                     draw_rounded_rect(r, solo_rc.x, solo_rc.y, solo_rc.w, solo_rc.h, 4, COL_GOLD, 0xFF);
+                else if (sel)
+                    draw_rounded_rect(r, solo_rc.x, solo_rc.y, solo_rc.w, solo_rc.h, 4, COL_SURFACE_ALT, 0xFF);
                 else
                     draw_rounded_rect(r, solo_rc.x, solo_rc.y, solo_rc.w, solo_rc.h, 4, COL_SURFACE, 0xFF);
                 draw_text_centered(r, "S", solo_rc.x + 12, solo_rc.y + 12, 9,
@@ -1244,8 +1372,15 @@ void ui_piano_roll_render(MuseApp *app) {
             if (app->project.num_layers > 1) {
                 UiRect rm_rc = { lp_content_w - 22, cy + 6, 16, 16 };
                 bool rm_hov = lp_hover && ui_rect_contains(rm_rc, lp_mx, lp_my);
-                draw_rounded_rect(r, rm_rc.x, rm_rc.y, rm_rc.w, rm_rc.h, 3,
-                                  rm_hov ? COL_BG_LIGHT : COL_SURFACE, 0xFF);
+                if (sel)
+                    draw_rounded_rect(r, rm_rc.x + 1, rm_rc.y + 1, rm_rc.w, rm_rc.h, 3,
+                                      0x00, 0x00, 0x00, 0x28);
+                if (rm_hov)
+                    draw_rounded_rect(r, rm_rc.x, rm_rc.y, rm_rc.w, rm_rc.h, 3, COL_BG_LIGHT, 0xFF);
+                else if (sel)
+                    draw_rounded_rect(r, rm_rc.x, rm_rc.y, rm_rc.w, rm_rc.h, 3, COL_SURFACE_ALT, 0xFF);
+                else
+                    draw_rounded_rect(r, rm_rc.x, rm_rc.y, rm_rc.w, rm_rc.h, 3, COL_SURFACE, 0xFF);
                 /* Draw × centered, 3px half-size, integer coords for symmetry */
                 int xi = (int)(rm_rc.x + rm_rc.w / 2);
                 int yi = (int)(rm_rc.y + rm_rc.h / 2);
@@ -1272,8 +1407,13 @@ void ui_piano_roll_render(MuseApp *app) {
             {
                 /* Aux send button */
                 UiRect aux_rc = { 24, cy + 4, 32, 20 };
-                draw_rounded_rect(r, aux_rc.x, aux_rc.y, aux_rc.w, aux_rc.h, 4,
-                                  COL_SURFACE, 0xFF);
+                if (sel)
+                    draw_rounded_rect(r, aux_rc.x + 1, aux_rc.y + 1, aux_rc.w, aux_rc.h, 4,
+                                      0x00, 0x00, 0x00, 0x28);
+                if (sel)
+                    draw_rounded_rect(r, aux_rc.x, aux_rc.y, aux_rc.w, aux_rc.h, 4, COL_SURFACE_ALT, 0xFF);
+                else
+                    draw_rounded_rect(r, aux_rc.x, aux_rc.y, aux_rc.w, aux_rc.h, 4, COL_SURFACE, 0xFF);
                 draw_text_centered(r, "Aux", aux_rc.x + 16, aux_rc.y + 10, 9, COL_TEXT_DIM);
 
                 /* volume */
@@ -1289,39 +1429,91 @@ void ui_piano_roll_render(MuseApp *app) {
             }
             cy += 28; /* aux/vol row h=28 */
 
-            /* sublayer tabs */
+            /* sublayer tabs — wrap every 5 per row */
             cy += 2;
             {
-                float tx = 24;
+                #define SUBS_PER_ROW 5
+                #define SUB_TAB_W 24
+                #define SUB_ROW_H 20
+                float sub_base_y = cy;
                 for (int si = 0; si < ly->num_sublayers; si++) {
+                    int col = si % SUBS_PER_ROW;
+                    int row = si / SUBS_PER_ROW;
+                    float tx = 24 + col * SUB_TAB_W;
+                    float ty = sub_base_y + row * SUB_ROW_H;
                     bool active_sub = (si == ly->active_sub);
-                    UiRect sub_rc = { tx, cy, 22, 18 };
-                    draw_rounded_rect(r, sub_rc.x, sub_rc.y, sub_rc.w, sub_rc.h, 3,
-                                      active_sub ? 0xD8 : 0x31,
-                                      active_sub ? 0xAD : 0x32,
-                                      active_sub ? 0x70 : 0x39, 0xFF);
-                    char sn[4]; snprintf(sn, sizeof(sn), "%d", si + 1);
-                    if (active_sub)
-                        draw_text_bold(r, sn, tx + 11 - text_width(sn, 9) / 2, cy + 9.0f - text_line_height(9) / 2, 9, 0x00, 0x00, 0x00);
+                    UiRect sub_rc = { tx, ty, 22, 18 };
+                    if (sel)
+                        draw_rounded_rect(r, sub_rc.x + 1, sub_rc.y + 1, sub_rc.w, sub_rc.h, 4,
+                                          0x00, 0x00, 0x00, 0x28);
+                    if (active_sub) {
+                        draw_rounded_rect(r, sub_rc.x, sub_rc.y, sub_rc.w, sub_rc.h, 4,
+                                          COL_GOLD, 0xFF);
+                        draw_filled_rect(r, sub_rc.x + 2, sub_rc.y, sub_rc.w - 4, 1,
+                                         0xFF, 0xFF, 0xFF, 0x20);
+                    } else if (sel) {
+                        draw_rounded_rect(r, sub_rc.x, sub_rc.y, sub_rc.w, sub_rc.h, 4,
+                                          COL_SURFACE_ALT, 0xFF);
+                    } else {
+                        draw_rounded_rect(r, sub_rc.x, sub_rc.y, sub_rc.w, sub_rc.h, 4,
+                                          COL_SURFACE, 0xFF);
+                    }
+                    bool is_drum_sub = (ly->drum_sub_mask >> si) & 1;
+                    char sn[4];
+                    if (is_drum_sub)
+                        snprintf(sn, sizeof(sn), "D");
                     else
-                        draw_text_centered(r, sn, tx + 11, cy + 9.0f, 9, COL_TEXT_DIM);
-                    tx += 24;
+                        snprintf(sn, sizeof(sn), "%d", si + 1);
+                    if (active_sub)
+                        draw_text_bold(r, sn, tx + 11 - text_width(sn, 9) / 2, ty + 9.0f - text_line_height(9) / 2, 9, COL_BG_DARK);
+                    else
+                        draw_text_centered(r, sn, tx + 11, ty + 9.0f, 9, COL_TEXT_DIM);
                 }
+                /* +/- buttons after last sublayer tab */
+                int last_col = ly->num_sublayers % SUBS_PER_ROW;
+                int last_row = ly->num_sublayers / SUBS_PER_ROW;
+                /* if the last row is full, +/- go on a new row */
+                if (last_col == 0 && ly->num_sublayers > 0) {
+                    /* last_row already points to the next row */
+                }
+                float btn_tx = 24 + last_col * SUB_TAB_W;
+                float btn_ty = sub_base_y + last_row * SUB_ROW_H;
                 /* + button */
-                UiRect plus_rc = { tx, cy, 22, 18 };
-                draw_rounded_rect(r, plus_rc.x, plus_rc.y, plus_rc.w, plus_rc.h, 3,
-                                  COL_SURFACE, 0xFF);
-                draw_text_centered(r, "+", tx + 11, cy + 9, 9, COL_TEXT_DIM);
-                tx += 24;
-                /* - button (only if multiple sublayers) */
+                UiRect plus_rc = { btn_tx, btn_ty, 22, 18 };
+                if (sel)
+                    draw_rounded_rect(r, plus_rc.x + 1, plus_rc.y + 1, plus_rc.w, plus_rc.h, 3,
+                                      0x00, 0x00, 0x00, 0x28);
+                if (sel)
+                    draw_rounded_rect(r, plus_rc.x, plus_rc.y, plus_rc.w, plus_rc.h, 3, COL_SURFACE_ALT, 0xFF);
+                else
+                    draw_rounded_rect(r, plus_rc.x, plus_rc.y, plus_rc.w, plus_rc.h, 3, COL_SURFACE, 0xFF);
+                draw_text_centered(r, "+", btn_tx + 11, btn_ty + 9, 9, COL_TEXT_DIM);
+                btn_tx += SUB_TAB_W;
+                /* - button */
                 if (ly->num_sublayers > 1) {
-                    UiRect minus_rc = { tx, cy, 22, 18 };
-                    draw_rounded_rect(r, minus_rc.x, minus_rc.y, minus_rc.w, minus_rc.h, 3,
-                                      COL_SURFACE, 0xFF);
-                    draw_text_centered(r, "-", tx + 11, cy + 9, 9, COL_TEXT_DIM);
+                    /* wrap - if needed */
+                    if (btn_tx + 22 > 24 + SUBS_PER_ROW * SUB_TAB_W) {
+                        btn_tx = 24;
+                        btn_ty += SUB_ROW_H;
+                    }
+                    UiRect minus_rc = { btn_tx, btn_ty, 22, 18 };
+                    if (sel)
+                        draw_rounded_rect(r, minus_rc.x + 1, minus_rc.y + 1, minus_rc.w, minus_rc.h, 3,
+                                          0x00, 0x00, 0x00, 0x28);
+                    if (sel)
+                        draw_rounded_rect(r, minus_rc.x, minus_rc.y, minus_rc.w, minus_rc.h, 3, COL_SURFACE_ALT, 0xFF);
+                    else
+                        draw_rounded_rect(r, minus_rc.x, minus_rc.y, minus_rc.w, minus_rc.h, 3, COL_SURFACE, 0xFF);
+                    draw_text_centered(r, "-", btn_tx + 11, btn_ty + 9, 9, COL_TEXT_DIM);
                 }
+                /* total height of sublayer tabs area */
+                int total_sub_rows = (ly->num_sublayers + 2 /* +/- */ + SUBS_PER_ROW - 1) / SUBS_PER_ROW;
+                if (total_sub_rows < 1) total_sub_rows = 1;
+                cy = sub_base_y + total_sub_rows * SUB_ROW_H;
+                #undef SUBS_PER_ROW
+                #undef SUB_TAB_W
+                #undef SUB_ROW_H
             }
-            cy += 20; /* sublayer tabs h=18+2 */
 
             /* Marnian synth profile selector */
             if (ly->inst_id == 0x14 || ly->inst_id == 0x18 ||
@@ -1341,7 +1533,7 @@ void ui_piano_roll_render(MuseApp *app) {
         }
 
         /* add instrument button */
-        cy += 4;
+        cy += 16;
         {
             UiRect add_btn = { 8, cy, lp_content_w - 16, 28 };
             draw_ctk_button(r, add_btn, "+ Add Instrument", 13,
@@ -1353,8 +1545,10 @@ void ui_piano_roll_render(MuseApp *app) {
         /* --- NOTE PROPERTIES --- */
         if (app->project.num_layers > 0) {
             cy += 10;
-            draw_text_bold(r, "NOTE PROPERTIES", 4, cy, 11, COL_GOLD);
-            cy += 28 + 4; /* h=28 + gap */
+            draw_text_bold(r, "NOTE PROPERTIES", 8, cy, 11, COL_GOLD);
+            cy += 18;
+            draw_hline(r, 8, LEFT_PANEL_W - 12, cy, COL_BORDER);
+            cy += 10 + 4;
 
             MuseLayer *aly = &app->project.layers[app->project.active_layer];
             const MuseInstrument *ains = inst_by_id(aly->inst_id);
@@ -1411,7 +1605,7 @@ void ui_piano_roll_render(MuseApp *app) {
                 }
                 UiRect tech_entry = { 8, cy, lp_content_w - 16, 28 };
                 draw_rounded_rect(r, tech_entry.x, tech_entry.y, tech_entry.w, tech_entry.h, 6,
-                                  0x31, 0x32, 0x39, 0xFF);
+                                  COL_SURFACE, 0xFF);
                 float tech_lh = text_line_height(13);
                 float tech_ty = tech_entry.y + (tech_entry.h - tech_lh) / 2.0f;
                 draw_text(r, tech_label, tech_entry.x + 8, tech_ty, 13, 0xE0, 0xE0, 0xE0);
@@ -1505,8 +1699,10 @@ void ui_piano_roll_render(MuseApp *app) {
 
         /* --- FILE --- */
         cy += 10;
-        draw_text_bold(r, "FILE", 4, cy, 11, COL_GOLD);
-        cy += 28 + 4;
+        draw_text_bold(r, "FILE", 8, cy, 11, COL_GOLD);
+        cy += 18;
+        draw_hline(r, 8, LEFT_PANEL_W - 12, cy, COL_BORDER);
+        cy += 10 + 4;
 
         /* Import button */
         {
@@ -1552,11 +1748,11 @@ void ui_piano_roll_render(MuseApp *app) {
             if (app->edit_field == 3) {
                 /* Render entry background/border manually */
                 draw_rounded_rect(r, fn_entry.x, fn_entry.y, fn_entry.w, fn_entry.h, 6,
-                                  0x31, 0x32, 0x39, 0xFF);
+                                  COL_SURFACE, 0xFF);
                 draw_rounded_rect_outline(r, fn_entry.x, fn_entry.y, fn_entry.w, fn_entry.h, 6,
-                                          0xD8, 0xAD, 0x70);
+                                          COL_GOLD);
                 draw_rounded_rect_outline(r, fn_entry.x+1, fn_entry.y+1, fn_entry.w-2, fn_entry.h-2, 5,
-                                          0xD8, 0xAD, 0x70);
+                                          COL_GOLD);
 
                 /* Measure text up to cursor to find cursor pixel position */
                 int c = app->edit_cursor;
@@ -1649,7 +1845,7 @@ void ui_piano_roll_render(MuseApp *app) {
         /* Fade left panel during transition */
         if (persp_t > 0.01f) {
             uint8_t fa = (uint8_t)(fminf(persp_t * 3.0f, 1.0f) * 255);
-            draw_filled_rect(r, 0, lp_y, LEFT_PANEL_W, lp_h, 0x16, 0x16, 0x18, fa);
+            draw_filled_rect(r, 0, lp_y, LEFT_PANEL_W, lp_h, COL_BG_DARK, fa);
         }
 
         pop_clip(r);
@@ -1681,24 +1877,14 @@ void ui_instrument_picker_render(MuseApp *app) {
     float dx = ((float)app->win_w - dw) / 2;
     float dy = ((float)app->win_h - dh) / 2;
 
-    /* Background */
-    draw_rounded_rect(r, dx, dy, dw, dh, 6, COL_SURFACE, 0xFF);
+    const char *ptitle = app->picker_mode == 0 ? "Select Instrument" : "Move to Instrument";
+    DialogFrame df = draw_dialog_frame(r, dx, dy, dw, dh, ptitle,
+                                       app->mouse_x, app->mouse_y);
+    float content_y = df.content_y;
+    float content_h = df.content_h;
 
-    /* Header bar */
-    float hdr_h = 32;
-    draw_filled_rect(r, dx, dy, dw, hdr_h, COL_BG, 0xFF);
-    const char *title = app->picker_mode == 0 ? "Select Instrument" : "Move Selection to Instrument";
-    draw_text_bold(r, title, dx + 8, dy + hdr_h / 2 - 5, 11, COL_TEXT);
-
-    /* Close button (x) in top-right */
-    draw_text(r, "x", dx + dw - 20, dy + hdr_h / 2 - 5, 13, COL_TEXT);
-
-    /* Content area */
-    float content_y = dy + hdr_h + 4;
-    float content_h = dh - hdr_h - 12;
-
-    /* Inner darker background */
-    draw_rounded_rect(r, dx + 4, content_y - 2, dw - 8, content_h + 4, 4,
+    /* Inner darker background for list */
+    draw_rounded_rect(r, dx + 4, content_y - 2, dw - 8, content_h + 4, 6,
                       COL_BG, 0xFF);
 
     push_clip(r, dx + 8, content_y, dw - 16, content_h);
@@ -1727,10 +1913,12 @@ void ui_instrument_picker_render(MuseApp *app) {
             if (used)
                 draw_rounded_rect(r, dx + 10, btn_y, dw - 20, btn_h, 4,
                                   COL_SURFACE, 0x60);
-            else if (hovered)
+            else if (hovered) {
                 draw_rounded_rect(r, dx + 10, btn_y, dw - 20, btn_h, 4,
-                                  COL_BG_LIGHT, 0xFF);
-            else
+                                  COL_SURFACE, 0xFF);
+                draw_rounded_rect(r, dx + 10, btn_y, dw - 20, btn_h, 4,
+                                  0xFF, 0xFF, 0xFF, 0x10);
+            } else
                 draw_rounded_rect(r, dx + 10, btn_y, dw - 20, btn_h, 4,
                                   COL_SURFACE, 0xFF);
 
@@ -1753,9 +1941,10 @@ void ui_instrument_picker_render(MuseApp *app) {
             if (used)
                 draw_text(r, inst->name, dx + 36, btn_y + btn_h / 2 - 4, 10,
                           0x60, 0x60, 0x60);
+            else if (hovered)
+                draw_text_bold(r, inst->name, dx + 36, btn_y + btn_h / 2 - 4, 10, COL_TEXT);
             else
-                draw_text(r, inst->name, dx + 36, btn_y + btn_h / 2 - 4, 10,
-                          hovered ? COL_GOLD_LIGHT : COL_TEXT);
+                draw_text(r, inst->name, dx + 36, btn_y + btn_h / 2 - 4, 10, COL_TEXT_DIM);
 
             cy += btn_h + 2;
             item_idx++;
@@ -1782,23 +1971,18 @@ void ui_aux_send_render(MuseApp *app) {
     draw_filled_rect(r, 0, 0, (float)app->win_w, (float)app->win_h,
                      0x00, 0x00, 0x00, 0x80);
 
-    /* Dialog: 300x200, centered */
-    float dw = 300, dh = 200;
+    /* Dialog: 300x210, centered */
+    float dw = 300, dh = 210;
     float dx = ((float)app->win_w - dw) / 2;
     float dy = ((float)app->win_h - dh) / 2;
 
-    draw_rounded_rect(r, dx, dy, dw, dh, 6, COL_SURFACE, 0xFF);
-
-    /* Header bar */
-    float hdr_h = 28;
-    draw_filled_rect(r, dx, dy, dw, hdr_h, COL_BG, 0xFF);
-    char title[128];
-    snprintf(title, sizeof(title), "Aux Send - %s", ins ? ins->name : "Unknown");
-    draw_text_bold(r, title, dx + 8, dy + hdr_h / 2 - 5, 10, COL_TEXT);
-    draw_text(r, "x", dx + dw - 20, dy + hdr_h / 2 - 5, 13, COL_TEXT);
+    char aux_title[128];
+    snprintf(aux_title, sizeof(aux_title), "Aux Send - %s", ins ? ins->name : "Unknown");
+    DialogFrame df = draw_dialog_frame(r, dx, dy, dw, dh, aux_title,
+                                       app->mouse_x, app->mouse_y);
 
     /* Content area: 3 send sliders */
-    float content_y = dy + hdr_h + 12;
+    float content_y = df.content_y + 4;
     float sl_x = dx + 80;
     float sl_w = 140;
     app->_aux_slider_x = sl_x;
@@ -1992,18 +2176,11 @@ void ui_chord_picker_render(MuseApp *app) {
     float dx = ((float)app->win_w - dw) / 2;
     float dy = ((float)app->win_h - dh) / 2;
 
-    draw_rounded_rect(r, dx, dy, dw, dh, 6, COL_SURFACE, 0xFF);
-
-    /* Header */
-    float hdr_h = 32;
-    draw_filled_rect(r, dx, dy, dw, hdr_h, COL_BG, 0xFF);
-    draw_text_bold(r, "Chordify", dx + 8, dy + hdr_h / 2 - 5, 11, COL_TEXT);
-    draw_text(r, "x", dx + dw - 20, dy + hdr_h / 2 - 5, 13, COL_TEXT);
-
-    /* Content */
-    float content_y = dy + hdr_h + 4;
-    float content_h = dh - hdr_h - 12;
-    push_clip(r, dx + 8, content_y, dw - 16, content_h);
+    DialogFrame df = draw_dialog_frame(r, dx, dy, dw, dh, "Chordify",
+                                       app->mouse_x, app->mouse_y);
+    float content_y = df.content_y;
+    float content_h = df.content_h;
+    push_clip(r, df.content_x, content_y, df.content_w, content_h);
 
     float cy = content_y - app->chord_scroll;
     int item_idx = 0;
@@ -2020,16 +2197,14 @@ void ui_chord_picker_render(MuseApp *app) {
             bool hovered = (item_idx == app->chord_hover);
             bool detected = chord_matched && chord_matched[item_idx];
 
-            uint8_t bg_r, bg_g, bg_b;
-            if (detected) {
-                bg_r = 0xB0; bg_g = 0x90; bg_b = 0x46; /* COL_GOLD_DARK */
-            } else if (hovered) {
-                bg_r = 0x24; bg_g = 0x24; bg_b = 0x27; /* COL_BG_LIGHT */
-            } else {
-                bg_r = 0x31; bg_g = 0x32; bg_b = 0x39; /* COL_SURFACE */
-            }
             draw_rounded_rect(r, dx + 10, btn_y, dw - 20, btn_h, 4,
-                              bg_r, bg_g, bg_b, 0xFF);
+                              COL_SURFACE, 0xFF);
+            if (detected)
+                draw_rounded_rect(r, dx + 10, btn_y, dw - 20, btn_h, 4,
+                                  COL_GOLD, 0x20);
+            else if (hovered)
+                draw_rounded_rect(r, dx + 10, btn_y, dw - 20, btn_h, 4,
+                                  0xFF, 0xFF, 0xFF, 0x10);
 
             /* Label with intervals */
             char lbl[128];
@@ -2040,8 +2215,12 @@ void ui_chord_picker_render(MuseApp *app) {
                 strncat(ints_str, tmp, sizeof(ints_str) - strlen(ints_str) - 1);
             }
             snprintf(lbl, sizeof(lbl), "%s  (%s)", cd->name, ints_str);
-            draw_text(r, lbl, dx + 16, btn_y + btn_h / 2 - 4, 10,
-                      hovered ? COL_GOLD_LIGHT : COL_TEXT);
+            if (hovered)
+                draw_text_bold(r, lbl, dx + 16, btn_y + btn_h / 2 - 4, 10, COL_TEXT);
+            else if (detected)
+                draw_text(r, lbl, dx + 16, btn_y + btn_h / 2 - 4, 10, COL_GOLD_LIGHT);
+            else
+                draw_text(r, lbl, dx + 16, btn_y + btn_h / 2 - 4, 10, COL_TEXT_DIM);
 
             cy += btn_h + 2;
             item_idx++;
@@ -2103,19 +2282,27 @@ void ui_dropdown_render(MuseApp *app) {
     /* Clamp to window */
     if (dmy + menu_h > app->win_h) dmy = app->dropdown_anchor.y - menu_h - 2;
 
-    /* Background with rounded corners */
-    draw_rounded_rect(r, dmx, dmy, menu_w, menu_h, 6, 0x31, 0x32, 0x39, 0xFF);
-    draw_rounded_rect_outline(r, dmx, dmy, menu_w, menu_h, 6, 0x44, 0x43, 0x48);
+    /* Drop shadow */
+    draw_rounded_rect(r, dmx + 3, dmy + 3, menu_w, menu_h, 8, 0x00, 0x00, 0x00, 0x40);
+    draw_rounded_rect(r, dmx + 1, dmy + 1, menu_w, menu_h, 8, 0x00, 0x00, 0x00, 0x20);
+
+    /* Background */
+    draw_rounded_rect(r, dmx, dmy, menu_w, menu_h, 8, COL_SURFACE, 0xFF);
+    /* top highlight */
+    draw_filled_rect(r, dmx + 6, dmy, menu_w - 12, 1, 0xFF, 0xFF, 0xFF, 0x06);
 
     push_clip(r, dmx, dmy, menu_w, menu_h);
     for (int i = 0; i < n_items; i++) {
         float iy = dmy + 2 + i * item_h;
         bool hovered = (i == app->dropdown_hover);
         if (hovered) {
-            draw_rounded_rect(r, dmx + 2, iy, menu_w - 4, item_h, 4,
-                              0xB0, 0x90, 0x46, 0xFF);
+            draw_rounded_rect(r, dmx + 3, iy, menu_w - 6, item_h, 4,
+                              0xFF, 0xFF, 0xFF, 0x10);
         }
-        draw_text(r, items[i], dmx + 10, iy + item_h / 2 - 5, 13, COL_TEXT);
+        if (hovered)
+            draw_text(r, items[i], dmx + 12, iy + item_h / 2 - 5, 13, COL_TEXT);
+        else
+            draw_text(r, items[i], dmx + 12, iy + item_h / 2 - 5, 13, COL_TEXT_DIM);
     }
     pop_clip(r);
 }
@@ -2127,7 +2314,7 @@ void ui_midi_import_render(MuseApp *app) {
     SDL_Renderer *r = app->renderer;
     MidiImportData *mid = (MidiImportData *)app->midi_dlg_data;
 
-    float dw = 500, dh = 452;
+    float dw = 750, dh = 452;
     float dx = ((float)app->win_w - dw) / 2;
     float dy = ((float)app->win_h - dh) / 2;
 
@@ -2135,25 +2322,20 @@ void ui_midi_import_render(MuseApp *app) {
     draw_filled_rect(r, 0, 0, (float)app->win_w, (float)app->win_h,
                      0x00, 0x00, 0x00, 0x80);
 
-    /* Dialog background */
-    draw_rounded_rect(r, dx, dy, dw, dh, 8, COL_BG, 0xFF);
-    draw_rounded_rect_outline(r, dx, dy, dw, dh, 8, COL_BORDER);
-
-    /* Title */
-    draw_text_bold(r, "Import MIDI", dx + 16, dy + 12, 12, COL_TEXT);
-
-    /* Info header */
+    DialogFrame df = draw_dialog_frame(r, dx, dy, dw, dh, "Import MIDI",
+                                       app->mouse_x, app->mouse_y);
+    /* Subtitle with file info below the standard header */
     {
         int total_notes = 0;
         for (int i = 0; i < mid->num_channels; i++)
             total_notes += mid->channels[i].note_count;
         char info[128];
-        snprintf(info, sizeof(info), "%d channels, %d notes, %d BPM",
+        snprintf(info, sizeof(info), "%d channels  |  %d notes  |  %d BPM",
                  mid->num_channels, total_notes, mid->bpm);
-        draw_text(r, info, dx + 16, dy + 30, 10, COL_TEXT_DIM);
+        draw_text(r, info, df.content_x + 4, df.content_y, 10, COL_TEXT_DIM);
     }
 
-    float content_y = dy + 50;
+    float content_y = df.content_y + 18;
     if (mid->tempo_changes > 1) {
         char tc[64];
         snprintf(tc, sizeof(tc), "(%d tempo changes detected)", mid->tempo_changes);
@@ -2248,6 +2430,8 @@ void ui_midi_import_render(MuseApp *app) {
     /* Column headers */
     draw_text(r, "Channel", dx + 16, content_y, 9, COL_TEXT_DIM);
     draw_text(r, "BDO Instrument", dx + 260, content_y, 9, COL_TEXT_DIM);
+    draw_text(r, "Technique", dx + 450, content_y, 9, COL_TEXT_DIM);
+    draw_text(r, "Volume", dx + 600, content_y, 9, COL_TEXT_DIM);
     content_y += 16;
 
     /* Scrollable channel list */
@@ -2272,20 +2456,60 @@ void ui_midi_import_render(MuseApp *app) {
         /* Channel label */
         draw_text(r, ch->label, dx + 16, ry + row_h / 2 - 5, 10, COL_TEXT);
 
-        /* Instrument selector (shows as an entry with dropdown arrow) */
-        const MuseInstrument *ins = inst_by_id(ch->user_inst_id);
+        /* "Synth" toggle for percussion channels */
+        if (ch->is_percussion) {
+            UiRect se_rc = { dx + 200, ry + 6, 50, 20 };
+            if (ch->synth_emulate) {
+                draw_rounded_rect(r, se_rc.x, se_rc.y, se_rc.w, se_rc.h, 4, COL_GOLD_DARK, 0xFF);
+                draw_text_centered(r, "Synth", se_rc.x + se_rc.w / 2, se_rc.y + se_rc.h / 2, 8, COL_TEXT);
+            } else {
+                draw_rounded_rect(r, se_rc.x, se_rc.y, se_rc.w, se_rc.h, 4, COL_SURFACE, 0xFF);
+                draw_text_centered(r, "Synth", se_rc.x + se_rc.w / 2, se_rc.y + se_rc.h / 2, 8, COL_TEXT_DIM);
+            }
+        }
+
+        /* Effective instrument */
+        uint8_t eff_id = ch->user_inst_id;
+        if (mid->combine_all && !ch->is_percussion)
+            eff_id = mid->combine_inst_id;
+        const MuseInstrument *ins = inst_by_id(eff_id);
         const char *ins_name = ins ? ins->name : "Piano";
         UiRect inst_rc = { dx + 260, ry + 4, 180, 24 };
-        bool ch_greyed = mid->combine_all && !ch->is_percussion;
-        if (ch_greyed) {
-            draw_rounded_rect(r, inst_rc.x, inst_rc.y, inst_rc.w, inst_rc.h, 3,
-                              COL_SURFACE, 0x60);
-            draw_text(r, ins_name, inst_rc.x + 6, ry + row_h / 2 - 5, 10,
-                      0x60, 0x60, 0x60);
-        } else {
-            draw_ctk_entry(r, inst_rc, ins_name, 13, false);
+        bool is_combined = mid->combine_all && !ch->is_percussion;
+        draw_ctk_entry(r, inst_rc, ins_name, 13, false);
+        if (!is_combined)
             draw_dropdown_arrow(r, dx + 260 + 180 - 10, ry + 14, 7, COL_TEXT_DIM);
+
+        /* Technique selector — use effective instrument's techniques */
+        {
+            const MuseTechnique *tech = technique_by_id(ch->user_ntype);
+            /* If current technique isn't valid for this instrument, show default */
+            bool tech_valid = false;
+            if (ins) {
+                for (int t = 0; t < ins->num_techniques; t++)
+                    if (ins->techniques[t] == ch->user_ntype) { tech_valid = true; break; }
+            }
+            const char *tech_name = (tech && tech_valid) ? tech->name : "Sustain";
+            UiRect tech_rc = { dx + 450, ry + 4, 140, 24 };
+            draw_ctk_entry(r, tech_rc, tech_name, 13, false);
+            draw_dropdown_arrow(r, dx + 450 + 140 - 10, ry + 14, 7, COL_TEXT_DIM);
         }
+        /* Volume slider */
+        {
+            float sl_x = dx + 600, sl_y = ry + 10, sl_w = 100, sl_h = 12;
+            float fill = (float)ch->user_volume / 100.0f;
+            if (fill > 1.0f) fill = 1.0f;
+            draw_rounded_rect(r, sl_x, sl_y, sl_w, sl_h, 3, COL_BG, 0xFF);
+            if (fill > 0) {
+                float fw = sl_w * fill;
+                if (fw < 6) fw = 6;
+                draw_rounded_rect(r, sl_x, sl_y, fw, sl_h, 3, COL_GOLD_DARK, 0xFF);
+            }
+            char vbuf[8];
+            snprintf(vbuf, sizeof(vbuf), "%d%%", ch->user_volume);
+            draw_text_centered(r, vbuf, sl_x + sl_w / 2, sl_y + sl_h / 2, 8, COL_TEXT);
+        }
+
     }
     pop_clip(r);
 
@@ -2332,8 +2556,8 @@ void ui_midi_import_render(MuseApp *app) {
         if (dd_h > dd_max_h) dd_h = dd_max_h;
 
         /* Background */
-        draw_rounded_rect(r, dd_x, dd_y, dd_w, dd_h, 6, 0x31, 0x32, 0x39, 0xFF);
-        draw_rounded_rect_outline(r, dd_x, dd_y, dd_w, dd_h, 6, 0x44, 0x43, 0x48);
+        draw_rounded_rect(r, dd_x, dd_y, dd_w, dd_h, 6, COL_SURFACE, 0xFF);
+        draw_rounded_rect_outline(r, dd_x, dd_y, dd_w, dd_h, 6, COL_BORDER);
 
         push_clip(r, dd_x, dd_y, dd_w, dd_h);
         float cy2 = dd_y + 2 - app->midi_dlg_dropdown_scroll;
@@ -2352,7 +2576,7 @@ void ui_midi_import_render(MuseApp *app) {
                         bool hovered = (item_idx2 == app->midi_dlg_dropdown_hover);
                         if (hovered) {
                             draw_rounded_rect(r, dd_x + 2, cy2, dd_w - 4, dd_item_h, 4,
-                                              0xB0, 0x90, 0x46, 0xFF);
+                                              0xFF, 0xFF, 0xFF, 0x10);
                         }
                         /* Icon or color swatch */
                         SDL_Texture *icon = get_instrument_icon(grp->ids[i]);
@@ -2363,8 +2587,10 @@ void ui_midi_import_render(MuseApp *app) {
                             draw_filled_rect(r, dd_x + 10, cy2 + 3, 8, dd_item_h - 6,
                                              inst->color_r, inst->color_g, inst->color_b, 0xFF);
                         }
-                        draw_text(r, inst->name, dd_x + 32, cy2 + dd_item_h / 2 - 4, 9,
-                                  hovered ? COL_GOLD_LIGHT : COL_TEXT);
+                        if (hovered)
+                            draw_text_bold(r, inst->name, dd_x + 32, cy2 + dd_item_h / 2 - 4, 9, COL_TEXT);
+                        else
+                            draw_text(r, inst->name, dd_x + 32, cy2 + dd_item_h / 2 - 4, 9, COL_TEXT_DIM);
                     }
                 }
                 cy2 += dd_item_h;
@@ -2374,4 +2600,57 @@ void ui_midi_import_render(MuseApp *app) {
         }
         pop_clip(r);
     }
+
+    /* Technique dropdown overlay */
+    if (app->midi_dlg_tech_dropdown_ch >= 0 &&
+        app->midi_dlg_tech_dropdown_ch < mid->num_channels) {
+        int tch = app->midi_dlg_tech_dropdown_ch;
+        MidiChannel *tch_data = &mid->channels[tch];
+        uint8_t t_eff_id = tch_data->user_inst_id;
+        if (mid->combine_all && !tch_data->is_percussion)
+            t_eff_id = mid->combine_inst_id;
+        const MuseInstrument *tins = inst_by_id(t_eff_id);
+        int num_techs = tins ? tins->num_techniques : 1;
+
+        float td_x = dx + 450;
+        float td_row_y = content_y + tch * row_h - app->midi_dlg_scroll;
+        float td_anchor_y = td_row_y + row_h + 2;
+        float td_w = 160;
+        float td_item_h = 24;
+        float td_total_h = 4 + num_techs * td_item_h;
+        float td_y = td_anchor_y;
+        if (td_y + td_total_h > dy + dh) td_y = td_anchor_y - td_total_h - row_h - 4;
+        if (td_y < 0) td_y = 0;
+        float td_max_h = (float)app->win_h - td_y - 10;
+        float td_h = td_total_h > td_max_h ? td_max_h : td_total_h;
+
+        /* shadow + bg */
+        draw_rounded_rect(r, td_x + 3, td_y + 3, td_w, td_h, 8, 0x00, 0x00, 0x00, 0x40);
+        draw_rounded_rect(r, td_x, td_y, td_w, td_h, 8, COL_SURFACE, 0xFF);
+        draw_filled_rect(r, td_x + 6, td_y, td_w - 12, 1, 0xFF, 0xFF, 0xFF, 0x06);
+
+        push_clip(r, td_x, td_y, td_w, td_h);
+        float ty = td_y + 2 - app->midi_dlg_tech_dropdown_scroll;
+        for (int t = 0; t < num_techs; t++) {
+            if (ty + td_item_h >= td_y && ty < td_y + td_h) {
+                uint8_t tech_id = tins ? tins->techniques[t] : 0;
+                const MuseTechnique *tech = technique_by_id(tech_id);
+                bool thov = (t == app->midi_dlg_tech_dropdown_hover);
+                if (thov)
+                    draw_rounded_rect(r, td_x + 2, ty, td_w - 4, td_item_h, 4,
+                                      0xFF, 0xFF, 0xFF, 0x10);
+                if (tech) {
+                    draw_circle_filled(r, td_x + 14, ty + td_item_h / 2,
+                                       5, tech->r, tech->g, tech->b);
+                    if (thov)
+                        draw_text_bold(r, tech->name, td_x + 24, ty + td_item_h / 2 - 4, 9, COL_TEXT);
+                    else
+                        draw_text(r, tech->name, td_x + 24, ty + td_item_h / 2 - 4, 9, COL_TEXT_DIM);
+                }
+            }
+            ty += td_item_h;
+        }
+        pop_clip(r);
+    }
+
 }

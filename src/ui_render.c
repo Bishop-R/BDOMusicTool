@@ -430,133 +430,348 @@ void draw_vline(SDL_Renderer *r, float x, float y1, float y2,
 /* AA rounded rect - scanline coverage for smooth corners.
    This was annoying to get right but the result looks great. */
 
-static void aa_rounded_rect_fill(SDL_Renderer *r, float x, float y, float w, float h,
-                                 float rad, uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca) {
-    if (rad < 0.5f) rad = 0.5f;
-    if (rad > w * 0.5f) rad = w * 0.5f;
-    if (rad > h * 0.5f) rad = h * 0.5f;
+/* Cached quarter-circle corner textures for rounded rects.
+   8x8 supersampled, white with alpha — tinted at draw time.
+   Same technique as the circle cache but for a quarter arc. */
 
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+#define CORNER_CACHE_MAX 16
+static struct {
+    SDL_Texture *tex;
+    int radius;
+    int size;
+} corner_cache[CORNER_CACHE_MAX];
+static int corner_cache_count = 0;
 
-    float cx_l = x + rad;
-    float cx_r = x + w - rad;
-    float cy_t = y + rad;
-    float cy_b = y + h - rad;
+static SDL_Texture *get_corner_texture(SDL_Renderer *r, int irad) {
+    for (int i = 0; i < corner_cache_count; i++)
+        if (corner_cache[i].radius == irad)
+            return corner_cache[i].tex;
 
-    int iy_top_start = (int)floorf(y);
-    int iy_top_end   = (int)ceilf(cy_t);   /* first row past top corners */
-    int iy_bot_start = (int)floorf(cy_b);   /* first bottom corner row */
-    int iy_bot_end   = (int)ceilf(y + h);
+    /* Generate quarter-circle with 8x8 supersampling.
+       The texture is (irad+1) x (irad+1) pixels.
+       Pixel (0,0) is the outer corner, (irad,irad) is the inner corner.
+       The circle center is at (irad, irad) in texture space. */
+    int size = irad + 1;
+    float center = (float)irad;
+    float rad = (float)irad;
+    uint8_t *pixels = (uint8_t *)calloc(size * size * 4, 1);
+    if (!pixels) return NULL;
 
-    /* top corners */
-    for (int iy = iy_top_start; iy < iy_top_end; iy++) {
-        float fy = (float)iy + 0.5f;
-        float dy = fy - cy_t;
-        float d2 = rad * rad - dy * dy;
-        if (d2 <= 0) continue;
-        float dx = sqrtf(d2);
-        float row_x0 = cx_l - dx;
-        float row_x1 = cx_r + dx;
-
-        float row_top_f = (float)iy;
-        float row_bot_f = (float)(iy + 1);
-        float v_cov = 1.0f;
-        if (row_top_f < y) v_cov = row_bot_f - y;
-        if (v_cov < 0) v_cov = 0;
-        if (v_cov > 1) v_cov = 1;
-        uint8_t row_a = (uint8_t)(ca * v_cov);
-
-        float frac_left = row_x0 - floorf(row_x0);
-        float frac_right = ceilf(row_x1) - row_x1;
-
-        if (frac_left > 0.01f) {
-            uint8_t edge_a = (uint8_t)(row_a * (1.0f - frac_left));
-            SDL_SetRenderDrawColor(r, cr, cg, cb, edge_a);
-            SDL_FRect px = { floorf(row_x0), (float)iy, 1, 1 };
-            SDL_RenderFillRect(r, &px);
-            row_x0 = floorf(row_x0) + 1;
-        }
-        if (frac_right > 0.01f) {
-            uint8_t edge_a = (uint8_t)(row_a * (1.0f - frac_right));
-            SDL_SetRenderDrawColor(r, cr, cg, cb, edge_a);
-            SDL_FRect px = { floorf(row_x1), (float)iy, 1, 1 };
-            SDL_RenderFillRect(r, &px);
-            row_x1 = floorf(row_x1);
-        }
-        float interior_w = row_x1 - row_x0;
-        if (interior_w > 0) {
-            SDL_SetRenderDrawColor(r, cr, cg, cb, row_a);
-            SDL_FRect row = { row_x0, (float)iy, interior_w, 1 };
-            SDL_RenderFillRect(r, &row);
+    for (int py = 0; py < size; py++) {
+        for (int px = 0; px < size; px++) {
+            int count = 0;
+            for (int sy = 0; sy < 8; sy++) {
+                float fy = (float)py + (sy + 0.5f) / 8.0f - center;
+                float fy2 = fy * fy;
+                for (int sx = 0; sx < 8; sx++) {
+                    float fx = (float)px + (sx + 0.5f) / 8.0f - center;
+                    if (fx * fx + fy2 <= rad * rad) count++;
+                }
+            }
+            if (count > 0) {
+                int idx = (py * size + px) * 4;
+                pixels[idx + 0] = 255;
+                pixels[idx + 1] = 255;
+                pixels[idx + 2] = 255;
+                pixels[idx + 3] = (uint8_t)(255 * count / 64);
+            }
         }
     }
 
-    /* middle - just one big rect, easy */
-    {
-        float mid_top = cy_t;
-        float mid_bot = cy_b;
-        if (mid_top < y) mid_top = y;
-        if (mid_bot > y + h) mid_bot = y + h;
-        float mid_h = mid_bot - mid_top;
-        if (mid_h > 0) {
-            SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
-            SDL_FRect mid = { x, mid_top, w, mid_h };
-            SDL_RenderFillRect(r, &mid);
+    SDL_Surface *surf = SDL_CreateSurfaceFrom(size, size, SDL_PIXELFORMAT_RGBA32,
+                                               pixels, size * 4);
+    SDL_Texture *tex = NULL;
+    if (surf) {
+        tex = SDL_CreateTextureFromSurface(r, surf);
+        SDL_DestroySurface(surf);
+        if (tex) {
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
         }
     }
+    free(pixels);
 
-    /* bottom corners */
-    for (int iy = iy_bot_start; iy < iy_bot_end; iy++) {
-        float fy = (float)iy + 0.5f;
-        float dy = fy - cy_b;
-        float d2 = rad * rad - dy * dy;
-        if (d2 <= 0) continue;
-        float dx = sqrtf(d2);
-        float row_x0 = cx_l - dx;
-        float row_x1 = cx_r + dx;
-
-        float row_top_f = (float)iy;
-        float row_bot_f = (float)(iy + 1);
-        float v_cov = 1.0f;
-        if (row_bot_f > y + h) v_cov = (y + h) - row_top_f;
-        if (v_cov < 0) v_cov = 0;
-        if (v_cov > 1) v_cov = 1;
-        uint8_t row_a = (uint8_t)(ca * v_cov);
-
-        float frac_left = row_x0 - floorf(row_x0);
-        float frac_right = ceilf(row_x1) - row_x1;
-
-        if (frac_left > 0.01f) {
-            uint8_t edge_a = (uint8_t)(row_a * (1.0f - frac_left));
-            SDL_SetRenderDrawColor(r, cr, cg, cb, edge_a);
-            SDL_FRect px = { floorf(row_x0), (float)iy, 1, 1 };
-            SDL_RenderFillRect(r, &px);
-            row_x0 = floorf(row_x0) + 1;
-        }
-        if (frac_right > 0.01f) {
-            uint8_t edge_a = (uint8_t)(row_a * (1.0f - frac_right));
-            SDL_SetRenderDrawColor(r, cr, cg, cb, edge_a);
-            SDL_FRect px = { floorf(row_x1), (float)iy, 1, 1 };
-            SDL_RenderFillRect(r, &px);
-            row_x1 = floorf(row_x1);
-        }
-        float interior_w = row_x1 - row_x0;
-        if (interior_w > 0) {
-            SDL_SetRenderDrawColor(r, cr, cg, cb, row_a);
-            SDL_FRect row = { row_x0, (float)iy, interior_w, 1 };
-            SDL_RenderFillRect(r, &row);
-        }
+    if (tex && corner_cache_count < CORNER_CACHE_MAX) {
+        corner_cache[corner_cache_count].tex = tex;
+        corner_cache[corner_cache_count].radius = irad;
+        corner_cache[corner_cache_count].size = size;
+        corner_cache_count++;
     }
+    return tex;
 }
 
 void draw_rounded_rect(SDL_Renderer *r, float x, float y, float w, float h,
                        float radius, uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca) {
     if (radius < 1.0f) {
-        /* No rounding, just a normal rect */
         draw_filled_rect(r, x, y, w, h, cr, cg, cb, ca);
         return;
     }
-    aa_rounded_rect_fill(r, x, y, w, h, radius, cr, cg, cb, ca);
+    float rad = radius;
+    if (rad > w * 0.5f) rad = w * 0.5f;
+    if (rad > h * 0.5f) rad = h * 0.5f;
+
+    int irad = (int)(rad + 0.5f);
+    if (irad < 1) irad = 1;
+    SDL_Texture *corner = get_corner_texture(r, irad);
+    if (!corner) {
+        /* fallback to plain rect */
+        draw_filled_rect(r, x, y, w, h, cr, cg, cb, ca);
+        return;
+    }
+
+    /* Tint the white corner texture with the desired color */
+    SDL_SetTextureColorMod(corner, cr, cg, cb);
+    SDL_SetTextureAlphaMod(corner, ca);
+
+    float cs = (float)(irad + 1); /* corner texture size in pixels */
+    float crad = (float)irad;     /* actual radius */
+
+    /* 4 corners: blit with flipping */
+    /* Top-left: texture as-is (outer corner at 0,0) */
+    SDL_FRect tl_dst = { x, y, crad, crad };
+    SDL_FRect tl_src = { 0, 0, crad, crad };
+    SDL_RenderTextureRotated(r, corner, &tl_src, &tl_dst, 0, NULL, SDL_FLIP_NONE);
+
+    /* Top-right: flip horizontal */
+    SDL_FRect tr_dst = { x + w - crad, y, crad, crad };
+    SDL_RenderTextureRotated(r, corner, &tl_src, &tr_dst, 0, NULL, SDL_FLIP_HORIZONTAL);
+
+    /* Bottom-left: flip vertical */
+    SDL_FRect bl_dst = { x, y + h - crad, crad, crad };
+    SDL_RenderTextureRotated(r, corner, &tl_src, &bl_dst, 0, NULL, SDL_FLIP_VERTICAL);
+
+    /* Bottom-right: flip both */
+    SDL_FRect br_dst = { x + w - crad, y + h - crad, crad, crad };
+    SDL_RenderTextureRotated(r, corner, &tl_src, &br_dst, 0, NULL,
+                             SDL_FLIP_HORIZONTAL | SDL_FLIP_VERTICAL);
+
+    /* Fill the 3 rects between corners */
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
+
+    /* Top strip (between TL and TR) */
+    if (w > crad * 2) {
+        SDL_FRect top = { x + crad, y, w - crad * 2, crad };
+        SDL_RenderFillRect(r, &top);
+    }
+    /* Bottom strip */
+    if (w > crad * 2) {
+        SDL_FRect bot = { x + crad, y + h - crad, w - crad * 2, crad };
+        SDL_RenderFillRect(r, &bot);
+    }
+    /* Middle (full width, between top/bottom corner rows) */
+    if (h > crad * 2) {
+        SDL_FRect mid = { x, y + crad, w, h - crad * 2 };
+        SDL_RenderFillRect(r, &mid);
+    }
+}
+
+/* Note shape: rounded TL, TR, BR corners + square BL corner. */
+void draw_note_rect(SDL_Renderer *r, float x, float y, float w, float h,
+                    float radius, uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca) {
+    if (radius < 1.0f) {
+        draw_filled_rect(r, x, y, w, h, cr, cg, cb, ca);
+        return;
+    }
+    float rad = radius;
+    if (rad > w * 0.5f) rad = w * 0.5f;
+    if (rad > h * 0.5f) rad = h * 0.5f;
+
+    int irad = (int)(rad + 0.5f);
+    if (irad < 1) irad = 1;
+    float crad = (float)irad;
+
+    SDL_Texture *corner = get_corner_texture(r, irad);
+    if (!corner) {
+        draw_filled_rect(r, x, y, w, h, cr, cg, cb, ca);
+        return;
+    }
+
+    SDL_SetTextureColorMod(corner, cr, cg, cb);
+    SDL_SetTextureAlphaMod(corner, ca);
+
+    SDL_FRect src = { 0, 0, crad, crad };
+
+    /* Top-left: rounded */
+    SDL_FRect tl = { x, y, crad, crad };
+    SDL_RenderTextureRotated(r, corner, &src, &tl, 0, NULL, SDL_FLIP_NONE);
+
+    /* Top-right: rounded */
+    SDL_FRect tr = { x + w - crad, y, crad, crad };
+    SDL_RenderTextureRotated(r, corner, &src, &tr, 0, NULL, SDL_FLIP_HORIZONTAL);
+
+    /* Bottom-left: SQUARE */
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
+    SDL_FRect bl = { x, y + h - crad, crad, crad };
+    SDL_RenderFillRect(r, &bl);
+
+    /* Bottom-right: rounded (row-by-row reversed) */
+    for (int row = 0; row < irad; row++) {
+        int sy = irad - 1 - row;
+        SDL_FRect s = { 0, (float)sy, crad, 1 };
+        SDL_FRect d = { x + w - crad, y + h - crad + row, crad, 1 };
+        SDL_RenderTextureRotated(r, corner, &s, &d, 0, NULL, SDL_FLIP_HORIZONTAL);
+    }
+
+    /* Fill strips */
+    SDL_SetRenderDrawColor(r, cr, cg, cb, ca);
+    if (w > crad * 2) {
+        SDL_FRect top_s = { x + crad, y, w - crad * 2, crad };
+        SDL_RenderFillRect(r, &top_s);
+    }
+    if (w > crad * 2) {
+        SDL_FRect bot_s = { x + crad, y + h - crad, w - crad * 2, crad };
+        SDL_RenderFillRect(r, &bot_s);
+    }
+    if (h > crad * 2) {
+        SDL_FRect mid = { x, y + crad, w, h - crad * 2 };
+        SDL_RenderFillRect(r, &mid);
+    }
+}
+
+void draw_rounded_rect_vgradient(SDL_Renderer *r, float x, float y, float w, float h,
+                                 float radius,
+                                 uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
+                                 uint8_t br_, uint8_t bg_, uint8_t bb_, uint8_t ba_) {
+    if (radius < 1.0f) {
+        /* No rounding — just a gradient quad */
+        SDL_FColor ct = { tr/255.0f, tg/255.0f, tb/255.0f, ta/255.0f };
+        SDL_FColor cb = { br_/255.0f, bg_/255.0f, bb_/255.0f, ba_/255.0f };
+        SDL_Vertex v[4] = {
+            { .position={x,     y},     .color=ct },
+            { .position={x + w, y},     .color=ct },
+            { .position={x + w, y + h}, .color=cb },
+            { .position={x,     y + h}, .color=cb },
+        };
+        int idx[6] = {0,1,2,0,2,3};
+        SDL_RenderGeometry(r, NULL, v, 4, idx, 6);
+        return;
+    }
+    float rad = radius;
+    if (rad > w * 0.5f) rad = w * 0.5f;
+    if (rad > h * 0.5f) rad = h * 0.5f;
+
+    int irad = (int)(rad + 0.5f);
+    if (irad < 1) irad = 1;
+    float crad = (float)irad;
+
+    /* Corner textures — render row-by-row with interpolated color */
+    SDL_Texture *corner = get_corner_texture(r, irad);
+
+    /* Helper: lerp a color component */
+    #define VGRAD_LERP(top_c, bot_c, t) ((uint8_t)((top_c) + ((bot_c) - (top_c)) * (t)))
+
+    if (corner) {
+        /* Render each corner row-by-row so each row gets its own interpolated tint.
+           The corner texture is white with alpha — we tint per-row. */
+        SDL_FRect src_row;
+        SDL_FRect dst_row;
+
+        /* Top-left corner: row by row */
+        for (int row = 0; row < irad; row++) {
+            float t = (float)row / h;
+            uint8_t cr = VGRAD_LERP(tr, br_, t);
+            uint8_t cg = VGRAD_LERP(tg, bg_, t);
+            uint8_t cb2 = VGRAD_LERP(tb, bb_, t);
+            uint8_t ca = VGRAD_LERP(ta, ba_, t);
+            SDL_SetTextureColorMod(corner, cr, cg, cb2);
+            SDL_SetTextureAlphaMod(corner, ca);
+            src_row = (SDL_FRect){ 0, (float)row, crad, 1 };
+            dst_row = (SDL_FRect){ x, y + row, crad, 1 };
+            SDL_RenderTexture(r, corner, &src_row, &dst_row);
+        }
+        /* Top-right corner */
+        for (int row = 0; row < irad; row++) {
+            float t = (float)row / h;
+            uint8_t cr = VGRAD_LERP(tr, br_, t);
+            uint8_t cg = VGRAD_LERP(tg, bg_, t);
+            uint8_t cb2 = VGRAD_LERP(tb, bb_, t);
+            uint8_t ca = VGRAD_LERP(ta, ba_, t);
+            SDL_SetTextureColorMod(corner, cr, cg, cb2);
+            SDL_SetTextureAlphaMod(corner, ca);
+            src_row = (SDL_FRect){ 0, (float)row, crad, 1 };
+            dst_row = (SDL_FRect){ x + w - crad, y + row, crad, 1 };
+            SDL_RenderTextureRotated(r, corner, &src_row, &dst_row, 0, NULL, SDL_FLIP_HORIZONTAL);
+        }
+        /* Bottom-left corner — read texture rows in reverse for vertical flip */
+        for (int row = 0; row < irad; row++) {
+            float t = (h - crad + row) / h;
+            uint8_t cr = VGRAD_LERP(tr, br_, t);
+            uint8_t cg = VGRAD_LERP(tg, bg_, t);
+            uint8_t cb2 = VGRAD_LERP(tb, bb_, t);
+            uint8_t ca = VGRAD_LERP(ta, ba_, t);
+            SDL_SetTextureColorMod(corner, cr, cg, cb2);
+            SDL_SetTextureAlphaMod(corner, ca);
+            int src_y = irad - 1 - row; /* reverse: inner edge at top, outer at bottom */
+            src_row = (SDL_FRect){ 0, (float)src_y, crad, 1 };
+            dst_row = (SDL_FRect){ x, y + h - crad + row, crad, 1 };
+            SDL_RenderTexture(r, corner, &src_row, &dst_row);
+        }
+        /* Bottom-right corner — read texture rows in reverse + flip horizontal */
+        for (int row = 0; row < irad; row++) {
+            float t = (h - crad + row) / h;
+            uint8_t cr = VGRAD_LERP(tr, br_, t);
+            uint8_t cg = VGRAD_LERP(tg, bg_, t);
+            uint8_t cb2 = VGRAD_LERP(tb, bb_, t);
+            uint8_t ca = VGRAD_LERP(ta, ba_, t);
+            SDL_SetTextureColorMod(corner, cr, cg, cb2);
+            SDL_SetTextureAlphaMod(corner, ca);
+            int src_y = irad - 1 - row;
+            src_row = (SDL_FRect){ 0, (float)src_y, crad, 1 };
+            dst_row = (SDL_FRect){ x + w - crad, y + h - crad + row, crad, 1 };
+            SDL_RenderTextureRotated(r, corner, &src_row, &dst_row, 0, NULL, SDL_FLIP_HORIZONTAL);
+        }
+    }
+
+    /* Top strip between corners — gradient quad */
+    if (w > crad * 2) {
+        float t_bot = crad / h;
+        SDL_FColor ct = { tr/255.0f, tg/255.0f, tb/255.0f, ta/255.0f };
+        SDL_FColor cm = { VGRAD_LERP(tr,br_,t_bot)/255.0f, VGRAD_LERP(tg,bg_,t_bot)/255.0f,
+                          VGRAD_LERP(tb,bb_,t_bot)/255.0f, VGRAD_LERP(ta,ba_,t_bot)/255.0f };
+        SDL_Vertex v[4] = {
+            { .position={x + crad, y},          .color=ct },
+            { .position={x + w - crad, y},      .color=ct },
+            { .position={x + w - crad, y + crad}, .color=cm },
+            { .position={x + crad, y + crad},     .color=cm },
+        };
+        int idx[6] = {0,1,2,0,2,3};
+        SDL_RenderGeometry(r, NULL, v, 4, idx, 6);
+    }
+    /* Bottom strip between corners */
+    if (w > crad * 2) {
+        float t_top = (h - crad) / h;
+        SDL_FColor cm = { VGRAD_LERP(tr,br_,t_top)/255.0f, VGRAD_LERP(tg,bg_,t_top)/255.0f,
+                          VGRAD_LERP(tb,bb_,t_top)/255.0f, VGRAD_LERP(ta,ba_,t_top)/255.0f };
+        SDL_FColor cb = { br_/255.0f, bg_/255.0f, bb_/255.0f, ba_/255.0f };
+        SDL_Vertex v[4] = {
+            { .position={x + crad, y + h - crad}, .color=cm },
+            { .position={x + w - crad, y + h - crad}, .color=cm },
+            { .position={x + w - crad, y + h},    .color=cb },
+            { .position={x + crad, y + h},         .color=cb },
+        };
+        int idx[6] = {0,1,2,0,2,3};
+        SDL_RenderGeometry(r, NULL, v, 4, idx, 6);
+    }
+    /* Middle section — full width gradient quad */
+    if (h > crad * 2) {
+        float t_top = crad / h;
+        float t_bot = (h - crad) / h;
+        SDL_FColor ct = { VGRAD_LERP(tr,br_,t_top)/255.0f, VGRAD_LERP(tg,bg_,t_top)/255.0f,
+                          VGRAD_LERP(tb,bb_,t_top)/255.0f, VGRAD_LERP(ta,ba_,t_top)/255.0f };
+        SDL_FColor cb = { VGRAD_LERP(tr,br_,t_bot)/255.0f, VGRAD_LERP(tg,bg_,t_bot)/255.0f,
+                          VGRAD_LERP(tb,bb_,t_bot)/255.0f, VGRAD_LERP(ta,ba_,t_bot)/255.0f };
+        SDL_Vertex v[4] = {
+            { .position={x, y + crad},         .color=ct },
+            { .position={x + w, y + crad},     .color=ct },
+            { .position={x + w, y + h - crad}, .color=cb },
+            { .position={x, y + h - crad},     .color=cb },
+        };
+        int idx[6] = {0,1,2,0,2,3};
+        SDL_RenderGeometry(r, NULL, v, 4, idx, 6);
+    }
+    #undef VGRAD_LERP
 }
 
 void draw_rounded_rect_outline(SDL_Renderer *r, float x, float y, float w, float h,
@@ -807,36 +1022,45 @@ void draw_dropdown_arrow(SDL_Renderer *r, float cx, float cy, float size,
 
 void draw_ctk_button(SDL_Renderer *r, UiRect rc, const char *label,
                      float font_sz, bool hovered, bool active) {
-    uint8_t br, bg, bb;
-    if (active)       { br = 0xD8; bg = 0xAD; bb = 0x70; }
-    else if (hovered) { br = 0x44; bg = 0x43; bb = 0x48; }
-    else              { br = 0x31; bg = 0x32; bb = 0x39; }
-    draw_rounded_rect(r, rc.x, rc.y, rc.w, rc.h, 6, br, bg, bb, 0xFF);
-    uint8_t tr, tg, tb;
-    if (active) { tr = 0x16; tg = 0x16; tb = 0x18; }
-    else        { tr = 0xDD; tg = 0xC3; tb = 0x9E; }
-    draw_text_centered(r, label, rc.x + rc.w / 2, rc.y + rc.h / 2,
-                       font_sz, tr, tg, tb);
+    if (active)
+        draw_rounded_rect(r, rc.x, rc.y, rc.w, rc.h, 6, COL_GOLD, 0xFF);
+    else if (hovered)
+        draw_rounded_rect(r, rc.x, rc.y, rc.w, rc.h, 6, COL_BORDER, 0xFF);
+    else
+        draw_rounded_rect(r, rc.x, rc.y, rc.w, rc.h, 6, COL_SURFACE, 0xFF);
+    /* subtle top highlight on hover */
+    if (hovered && !active)
+        draw_filled_rect(r, rc.x + 3, rc.y, rc.w - 6, 1, 0xFF, 0xFF, 0xFF, 0x12);
+    if (active)
+        draw_text_centered(r, label, rc.x + rc.w / 2, rc.y + rc.h / 2,
+                           font_sz, COL_BG_DARK);
+    else
+        draw_text_centered(r, label, rc.x + rc.w / 2, rc.y + rc.h / 2,
+                           font_sz, COL_GOLD_LIGHT);
 }
 
 void draw_ctk_entry(SDL_Renderer *r, UiRect rc, const char *text,
                     float font_sz, bool focused) {
-    /* Interior fill */
-    draw_rounded_rect(r, rc.x, rc.y, rc.w, rc.h, 6, 0x31, 0x32, 0x39, 0xFF);
-    /* 2px border, gold when focused */
-    uint8_t br = focused ? 0xD8 : 0x44;
-    uint8_t bg_c = focused ? 0xAD : 0x43;
-    uint8_t bb = focused ? 0x70 : 0x48;
-    draw_rounded_rect_outline(r, rc.x, rc.y, rc.w, rc.h, 6, br, bg_c, bb);
-    draw_rounded_rect_outline(r, rc.x + 1, rc.y + 1, rc.w - 2, rc.h - 2, 5, br, bg_c, bb);
+    /* Border via layered rounded rect — gold when focused */
+    if (focused)
+        draw_rounded_rect(r, rc.x - 1, rc.y - 1, rc.w + 2, rc.h + 2, 7, COL_GOLD, 0xFF);
+    else
+        draw_rounded_rect(r, rc.x - 1, rc.y - 1, rc.w + 2, rc.h + 2, 7, COL_BORDER, 0xFF);
+    /* Concave body — dark top edge (shadow) → lighter at bottom (lit) */
+    draw_rounded_rect_vgradient(r, rc.x, rc.y, rc.w, rc.h, 6,
+                                COL_BG_LIGHT, 0xFF,
+                                COL_SURFACE, 0xFF);
+    /* inner top shadow to deepen the inset */
+    draw_filled_rect(r, rc.x + 4, rc.y, rc.w - 8, 1, 0x00, 0x00, 0x00, 0x18);
+    /* bottom inner highlight */
+    draw_filled_rect(r, rc.x + 4, rc.y + rc.h - 1, rc.w - 8, 1, 0xFF, 0xFF, 0xFF, 0x0A);
     if (text) {
         push_clip(r, rc.x + 6, rc.y, rc.w - 12, rc.h);
-        /* Vertically center text in the entry */
         int px = (int)(font_sz + 0.5f);
         AtlasSize *as = get_size(px);
         float line_h = as ? (float)(as->ascent + as->descent) : (float)px;
         float ty = rc.y + (rc.h - line_h) * 0.5f;
-        draw_text_px(r, text, rc.x + 8, ty, px, 0xE0, 0xE0, 0xE0);
+        draw_text_px(r, text, rc.x + 8, ty, px, COL_TEXT);
         pop_clip(r);
     }
 }
@@ -851,7 +1075,7 @@ void draw_ctk_slider(SDL_Renderer *r, float x, float y, float w,
 
     /* Track background */
     draw_rounded_rect(r, x + pad, track_y, w - 2 * pad, track_h, 3,
-                      0x31, 0x32, 0x39, 0xFF);
+                      COL_BG_LIGHT, 0xFF);
     /* Filled portion */
     float frac = (value - min_val) / (max_val - min_val);
     if (frac < 0) frac = 0;
@@ -859,13 +1083,13 @@ void draw_ctk_slider(SDL_Renderer *r, float x, float y, float w,
     float fill_w = (w - 2 * pad) * frac;
     if (fill_w > 3)
         draw_rounded_rect(r, x + pad, track_y, fill_w, track_h, 3,
-                          0x44, 0x43, 0x48, 0xFF);
+                          COL_BORDER, 0xFF);
     /* gold thumb, darker shade when being dragged */
     float tx = x + pad + (w - 2 * pad) * frac;
     if (active)
-        draw_circle_filled(r, tx, cy, thumb_r, 0xB0, 0x90, 0x46);
+        draw_circle_filled(r, tx, cy, thumb_r, COL_GOLD_DARK);
     else
-        draw_circle_filled(r, tx, cy, thumb_r, 0xD8, 0xAD, 0x70);
+        draw_circle_filled(r, tx, cy, thumb_r, COL_GOLD);
 }
 
 void draw_ctk_radio(SDL_Renderer *r, float x, float y, const char *label,
@@ -874,11 +1098,11 @@ void draw_ctk_radio(SDL_Renderer *r, float x, float y, const char *label,
     float cx = x + circle_r;
     float cy = y + circle_r;
     /* 2px AA border ring: draw outer circle in border color, inner in fill color */
-    draw_circle_filled(r, cx, cy, circle_r, 0x44, 0x43, 0x48);
+    draw_circle_filled(r, cx, cy, circle_r, COL_BORDER);
     if (selected) {
-        draw_circle_filled(r, cx, cy, circle_r - 2.0f, 0xD8, 0xAD, 0x70);
+        draw_circle_filled(r, cx, cy, circle_r - 2.0f, COL_GOLD);
     } else {
-        draw_circle_filled(r, cx, cy, circle_r - 2.0f, 0x31, 0x32, 0x39);
+        draw_circle_filled(r, cx, cy, circle_r - 2.0f, COL_SURFACE);
     }
     /* label text, vcenter with circle */
     int px = (int)(font_sz + 0.5f);
@@ -892,29 +1116,27 @@ void draw_ctk_radio(SDL_Renderer *r, float x, float y, const char *label,
 void draw_scrollbar_v(SDL_Renderer *r, float x, float y, float h,
                       float view_frac, float scroll_frac, bool hovered) {
     if (view_frac >= 1.0f) return;
-    float track_w = 12;
-    /* no visible track, just the thumb */
+    float track_w = 6;
+    draw_rounded_rect(r, x + 3, y + 2, track_w, h - 4, 3, 0x00, 0x00, 0x00, 0x10);
     float thumb_h = h * view_frac;
-    if (thumb_h < 24) thumb_h = 24;
+    if (thumb_h < 20) thumb_h = 20;
     float thumb_y = y + (h - thumb_h) * scroll_frac;
-    uint8_t tc = hovered ? 0xCC : 0x59;
-    uint8_t tg = hovered ? 0xA4 : 0x5A;
-    uint8_t tb = hovered ? 0x71 : 0x62;
-    draw_rounded_rect(r, x + 2, thumb_y + 2, track_w - 4, thumb_h - 4, 6, tc, tg, tb, 0xFF);
+    uint8_t a = hovered ? 0xCC : 0x80;
+    draw_rounded_rect(r, x + 3, thumb_y + 2, track_w, thumb_h - 4, 3,
+                      COL_TEXT_DIM, a);
 }
 
 void draw_scrollbar_h(SDL_Renderer *r, float x, float y, float w,
                       float view_frac, float scroll_frac, bool hovered) {
     if (view_frac >= 1.0f) return;
-    float track_h = 12;
-    /* no visible track, just the thumb */
+    float track_h = 6;
+    draw_rounded_rect(r, x + 2, y + 3, w - 4, track_h, 3, 0x00, 0x00, 0x00, 0x10);
     float thumb_w = w * view_frac;
-    if (thumb_w < 24) thumb_w = 24;
+    if (thumb_w < 20) thumb_w = 20;
     float thumb_x = x + (w - thumb_w) * scroll_frac;
-    uint8_t tc = hovered ? 0xCC : 0x59;
-    uint8_t tg = hovered ? 0xA4 : 0x5A;
-    uint8_t tb = hovered ? 0x71 : 0x62;
-    draw_rounded_rect(r, thumb_x + 2, y + 2, thumb_w - 4, track_h - 4, 6, tc, tg, tb, 0xFF);
+    uint8_t a = hovered ? 0xCC : 0x80;
+    draw_rounded_rect(r, thumb_x + 2, y + 3, thumb_w - 4, track_h, 3,
+                      COL_TEXT_DIM, a);
 }
 
 /* --- clip stack --- */
@@ -922,6 +1144,57 @@ void draw_scrollbar_h(SDL_Renderer *r, float x, float y, float w,
 #define MAX_CLIPS 16
 static SDL_Rect clip_stack[MAX_CLIPS];
 static int clip_depth = 0;
+
+DialogFrame draw_dialog_frame(SDL_Renderer *r, float x, float y, float w, float h,
+                              const char *title, float mouse_x, float mouse_y) {
+    float rad = 10;
+    float hdr_h = 34;
+    float pad = 8;
+
+    /* 2-layer drop shadow */
+    draw_rounded_rect(r, x + 4, y + 4, w, h, rad, 0x00, 0x00, 0x00, 0x40);
+    draw_rounded_rect(r, x + 2, y + 2, w, h, rad, 0x00, 0x00, 0x00, 0x20);
+
+    /* background */
+    draw_rounded_rect(r, x, y, w, h, rad, COL_SURFACE, 0xFF);
+
+    /* header bar — dark with top highlight and bottom separator */
+    draw_rounded_rect(r, x, y, w, hdr_h, rad, COL_BG, 0xFF);
+    draw_filled_rect(r, x, y + hdr_h - rad, w, rad, COL_BG, 0xFF);
+    draw_filled_rect(r, x + rad, y, w - rad * 2, 1, 0xFF, 0xFF, 0xFF, 0x06);
+    draw_hline(r, x, x + w, y + hdr_h, COL_BORDER);
+
+    /* title */
+    float title_y = y + hdr_h / 2.0f - text_line_height(11) / 2.0f;
+    draw_text_bold(r, title, x + 12, title_y, 11, COL_TEXT);
+
+    /* close button */
+    float cbx = x + w - 32, cby = y + 7, cbw = 22, cbh = 20;
+    bool cb_hov = (mouse_x >= cbx && mouse_x <= cbx + cbw &&
+                   mouse_y >= cby && mouse_y <= cby + cbh);
+    if (cb_hov)
+        draw_rounded_rect(r, cbx, cby, cbw, cbh, 4, COL_ERROR, 0xFF);
+    else
+        draw_rounded_rect(r, cbx, cby, cbw, cbh, 4, COL_SURFACE, 0x60);
+    {
+        int xi = (int)(cbx + cbw / 2), yi = (int)(cby + cbh / 2);
+        uint8_t xc = cb_hov ? 0xFF : 0xA0;
+        SDL_SetRenderDrawColor(r, xc, xc, xc, 0xFF);
+        SDL_RenderLine(r, xi - 4, yi - 4, xi + 4, yi + 4);
+        SDL_RenderLine(r, xi + 4, yi - 4, xi - 4, yi + 4);
+    }
+
+    /* subtle inner border along bottom of content area */
+    draw_filled_rect(r, x + rad, y + h - 1, w - rad * 2, 1, 0x00, 0x00, 0x00, 0x10);
+
+    DialogFrame f;
+    f.content_x = x + pad;
+    f.content_y = y + hdr_h + 4;
+    f.content_w = w - pad * 2;
+    f.content_h = h - hdr_h - pad - 4;
+    f.close_hovered = cb_hov;
+    return f;
+}
 
 void push_clip(SDL_Renderer *r, float x, float y, float w, float h) {
     SDL_Rect rc = { (int)x, (int)y, (int)ceilf(w), (int)ceilf(h) };

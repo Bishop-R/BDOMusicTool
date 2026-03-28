@@ -13,9 +13,12 @@ typedef struct {
     char      label[64];       /* "Ch 1: Acoustic Grand (42 notes)" */
     uint8_t   auto_inst_id;    /* auto-detected BDO instrument */
     uint8_t   user_inst_id;    /* user-selected BDO instrument */
+    uint8_t   user_ntype;      /* user-selected technique (dev builds only) */
+    uint8_t   user_volume;     /* proportional volume 0-100, default 100 */
     uint8_t   midi_ch;         /* source MIDI channel (0-15) */
     uint8_t   gm_program;      /* GM program number from program change */
     bool      is_percussion;   /* true if MIDI channel 9 (drums) */
+    bool      synth_emulate;   /* convert drum hits to synth notes */
     int       note_count;
     NoteArray notes;
 } MidiChannel;
@@ -38,6 +41,8 @@ typedef struct {
     uint8_t     combine_inst_id;
     VelMode     vel_mode;
     int         vel_min, vel_max;    /* for VEL_MODE_RESCALE */
+    bool        has_orig;            /* true after first apply saves originals */
+    NoteArray   orig_notes[MIDI_MAX_CHANNELS]; /* pre-conversion backup */
 } MidiImportData;
 
 /* parse MIDI into channel data for the import dialog */

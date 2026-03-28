@@ -119,7 +119,7 @@ void muse_project_remove_layer(MuseProject *p, int idx) {
 }
 
 int muse_layer_add_sublayer(MuseLayer *ly) {
-    if (ly->num_sublayers >= 5) return -1;
+    if (ly->num_sublayers >= 16) return -1;
     int idx = ly->num_sublayers;
     ly->sublayers = realloc(ly->sublayers, (size_t)(idx + 1) * sizeof(NoteArray));
     note_array_init(&ly->sublayers[idx]);

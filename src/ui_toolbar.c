@@ -43,6 +43,9 @@ static void open_callback(void *userdata, const char *const *filelist, int filte
             app->midi_dlg_dropdown_ch = -1;
             app->midi_dlg_dropdown_hover = -1;
             app->midi_dlg_dropdown_scroll = 0;
+            app->midi_dlg_tech_dropdown_ch = -1;
+            app->midi_dlg_tech_dropdown_hover = -1;
+            app->midi_dlg_tech_dropdown_scroll = 0;
         } else {
             midi_import_data_free(mid);
         }
@@ -234,8 +237,11 @@ void ui_toolbar_render(MuseApp *app) {
     float mx = app->mouse_x, my = app->mouse_y;
     bool in_bar = (my >= 0 && my < TRANSPORT_H);
 
-    /* Toolbar background */
+    /* Toolbar background — subtle top-to-bottom gradient for depth */
     draw_rounded_rect(r, 0, 0, (float)app->win_w, TRANSPORT_H, 6, COL_SURFACE, 0xFF);
+    /* lighter top strip for subtle gradient feel */
+    draw_filled_rect(r, 0, 0, (float)app->win_w, 1, 0xFF, 0xFF, 0xFF, 0x08);
+    draw_filled_rect(r, 0, 1, (float)app->win_w, 1, 0xFF, 0xFF, 0xFF, 0x04);
     /* tiny gap below the toolbar */
     draw_filled_rect(r, 0, TRANSPORT_H, (float)app->win_w, 2, COL_BG_DARK, 0xFF);
 
@@ -258,9 +264,10 @@ void ui_toolbar_render(MuseApp *app) {
     draw_ctk_button(r, btn_save, "Save", 13, in_bar && ui_rect_contains(btn_save, mx, my), false);
     x += 46;
 
-    /* Separator | */
-    x += 4;
-    draw_text_centered(r, "|", x, TRANSPORT_H / 2.0f, 13, COL_BORDER_LIGHT);
+    /* Separator — thin styled vertical line */
+    x += 6;
+    draw_vline(r, x, cy + 4, cy + btn_h - 4, COL_BORDER);
+    draw_filled_rect(r, x + 1, cy + 4, 1, btn_h - 8, 0xFF, 0xFF, 0xFF, 0x06);
     x += 8;
 
     /* BPM label + entry */
@@ -319,8 +326,10 @@ void ui_toolbar_render(MuseApp *app) {
     /* Play button - draw as shape because our font atlas doesn't have these glyphs */
     {
         bool ph = in_bar && ui_rect_contains(btn_play, mx, my);
-        uint8_t br = ph ? 0x44 : 0x31, bg = ph ? 0x43 : 0x32, bb = ph ? 0x48 : 0x39;
-        draw_rounded_rect(r, btn_play.x, btn_play.y, btn_play.w, btn_play.h, 6, br, bg, bb, 0xFF);
+        if (ph)
+            draw_rounded_rect(r, btn_play.x, btn_play.y, btn_play.w, btn_play.h, 6, COL_BORDER, 0xFF);
+        else
+            draw_rounded_rect(r, btn_play.x, btn_play.y, btn_play.w, btn_play.h, 6, COL_SURFACE, 0xFF);
         float pcx = btn_play.x + btn_play.w / 2;
         float pcy = btn_play.y + btn_play.h / 2;
         if (app->playing) {
@@ -344,8 +353,10 @@ void ui_toolbar_render(MuseApp *app) {
     /* Stop button */
     {
         bool sh = in_bar && ui_rect_contains(btn_stop, mx, my);
-        uint8_t br = sh ? 0x44 : 0x31, bg = sh ? 0x43 : 0x32, bb = sh ? 0x48 : 0x39;
-        draw_rounded_rect(r, btn_stop.x, btn_stop.y, btn_stop.w, btn_stop.h, 6, br, bg, bb, 0xFF);
+        if (sh)
+            draw_rounded_rect(r, btn_stop.x, btn_stop.y, btn_stop.w, btn_stop.h, 6, COL_BORDER, 0xFF);
+        else
+            draw_rounded_rect(r, btn_stop.x, btn_stop.y, btn_stop.w, btn_stop.h, 6, COL_SURFACE, 0xFF);
         float scx = btn_stop.x + btn_stop.w / 2;
         float scy = btn_stop.y + btn_stop.h / 2;
         draw_filled_rect(r, scx - 5, scy - 5, 10, 10, COL_GOLD_LIGHT, 0xFF);
@@ -385,7 +396,8 @@ void ui_toolbar_render(MuseApp *app) {
     }
     /* Separator before tools */
     float sep_x = (float)app->win_w - 8 - total_tools_w - 12;
-    draw_text_centered(r, "|", sep_x, TRANSPORT_H / 2.0f, 13, COL_BORDER_LIGHT);
+    draw_vline(r, sep_x, cy + 4, cy + btn_h - 4, COL_BORDER);
+    draw_filled_rect(r, sep_x + 1, cy + 4, 1, btn_h - 8, 0xFF, 0xFF, 0xFF, 0x06);
 
     float radio_h = 16;  /* circle diameter */
     float radio_y = (TRANSPORT_H - radio_h) / 2.0f;

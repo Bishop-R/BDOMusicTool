@@ -31,6 +31,12 @@ void draw_vline(SDL_Renderer *r, float x, float y1, float y2,
                 uint8_t cr, uint8_t cg, uint8_t cb);
 void draw_rounded_rect(SDL_Renderer *r, float x, float y, float w, float h,
                        float radius, uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca);
+void draw_note_rect(SDL_Renderer *r, float x, float y, float w, float h,
+                    float radius, uint8_t cr, uint8_t cg, uint8_t cb, uint8_t ca);
+void draw_rounded_rect_vgradient(SDL_Renderer *r, float x, float y, float w, float h,
+                                 float radius,
+                                 uint8_t tr, uint8_t tg, uint8_t tb, uint8_t ta,
+                                 uint8_t br, uint8_t bg, uint8_t bb, uint8_t ba);
 void draw_rounded_rect_outline(SDL_Renderer *r, float x, float y, float w, float h,
                                float radius, uint8_t cr, uint8_t cg, uint8_t cb);
 void draw_circle_filled(SDL_Renderer *r, float cx, float cy, float radius,
@@ -67,6 +73,17 @@ void draw_scrollbar_v(SDL_Renderer *r, float x, float y, float h,
                       float view_frac, float scroll_frac, bool hovered);
 void draw_scrollbar_h(SDL_Renderer *r, float x, float y, float w,
                       float view_frac, float scroll_frac, bool hovered);
+
+/* Dialog frame — unified chrome for all modal/floating windows.
+   Draws shadow, background, header bar with title and close button.
+   Returns the content area rect (below header, inset).
+   mouse_x/y needed for close button hover. */
+typedef struct {
+    float content_x, content_y, content_w, content_h;
+    bool close_hovered;
+} DialogFrame;
+DialogFrame draw_dialog_frame(SDL_Renderer *r, float x, float y, float w, float h,
+                              const char *title, float mouse_x, float mouse_y);
 
 /* Clipping */
 void push_clip(SDL_Renderer *r, float x, float y, float w, float h);

@@ -183,6 +183,9 @@ typedef struct MuseApp {
     int    midi_dlg_dropdown_ch; /* -1=none */
     int    midi_dlg_dropdown_hover;
     float  midi_dlg_dropdown_scroll;
+    int    midi_dlg_tech_dropdown_ch;
+    int    midi_dlg_tech_dropdown_hover;
+    float  midi_dlg_tech_dropdown_scroll;
 
     /* clipboard */
     NoteArray clipboard;
@@ -261,6 +264,7 @@ typedef struct MuseApp {
     bool     shortcuts_dragging;
     float    shortcuts_drag_ox, shortcuts_drag_oy;
     float    shortcuts_scroll;
+    float    _shortcuts_content_h;
 } MuseApp;
 
 bool muse_app_init(MuseApp *app);

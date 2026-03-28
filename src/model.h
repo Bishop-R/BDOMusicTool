@@ -40,6 +40,7 @@ typedef struct {
     NoteArray *sublayers;
     int        num_sublayers;
     int        active_sub;
+    uint16_t   drum_sub_mask;  /* bitmask: bit N = sublayer N is drum-originated */
 } MuseLayer;
 
 #define MAX_NOTES_PER_INSTRUMENT 10000

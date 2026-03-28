@@ -116,7 +116,7 @@ static void emit_note(MidiChannel *ch, uint8_t pitch, uint8_t vel, double start_
     double dur = end_tick - start_tick;
     if (dur < 1) dur = 1;
     MuseNote note = {
-        .pitch = pitch, .vel = vel, .ntype = 0,
+        .pitch = pitch, .vel = vel, .ntype = ch->is_percussion ? 99 : 0,
         .start = start_tick, .dur = dur,
     };
     note_array_push(&ch->notes, note);
@@ -230,9 +230,13 @@ MidiImportData *midi_parse(const char *path) {
         if (i == 9) {
             slots[i].auto_inst_id = 0x0D; /* Drum Set */
             slots[i].user_inst_id = 0x0D;
+            slots[i].user_ntype = 99;     /* Drum technique */
+            slots[i].user_volume = 100;
         } else {
             slots[i].auto_inst_id = 0x11; /* Piano */
             slots[i].user_inst_id = 0x11;
+            slots[i].user_ntype = 0;      /* Sustain technique */
+            slots[i].user_volume = 100;
         }
     }
 
@@ -621,6 +625,23 @@ void midi_apply(MidiImportData *mid, MuseProject *out) {
     if (mid->time_sig >= 2 && mid->time_sig <= 8)
         out->time_sig = mid->time_sig;
 
+    /* save originals on first apply, restore on subsequent re-applies */
+    if (!mid->has_orig) {
+        for (int i = 0; i < mid->num_channels; i++) {
+            note_array_init(&mid->orig_notes[i]);
+            for (int n = 0; n < mid->channels[i].notes.count; n++)
+                note_array_push(&mid->orig_notes[i], mid->channels[i].notes.notes[n]);
+        }
+        mid->has_orig = true;
+    } else {
+        /* restore from originals before reprocessing */
+        for (int i = 0; i < mid->num_channels; i++) {
+            note_array_clear(&mid->channels[i].notes);
+            for (int n = 0; n < mid->orig_notes[i].count; n++)
+                note_array_push(&mid->channels[i].notes, mid->orig_notes[i].notes[n]);
+        }
+    }
+
     /* convert tick positions to ms using the tempo map, then compress if needed */
     for (int i = 0; i < mid->num_channels; i++) {
         MidiChannel *ch = &mid->channels[i];
@@ -644,14 +665,33 @@ void midi_apply(MidiImportData *mid, MuseProject *out) {
         apply_vel_mode(mid, &ch->notes);
     }
 
+    /* Two passes: non-drum first, then drum channels — so drum sublayers end up last */
+    for (int drum_pass = 0; drum_pass < 2; drum_pass++) {
     for (int i = 0; i < mid->num_channels; i++) {
         MidiChannel *ch = &mid->channels[i];
         if (ch->note_count == 0) continue;
+        bool is_drum_ch = ch->is_percussion && ch->synth_emulate;
+        if (drum_pass == 0 && is_drum_ch) continue;
+        if (drum_pass == 1 && !is_drum_ch) continue;
 
         uint8_t eff_inst = ch->user_inst_id;
+        /* synth emulate: user_inst_id already set to their chosen synth */
         if (mid->combine_all && !ch->is_percussion)
             eff_inst = mid->combine_inst_id;
 
+        /* Build drum→synth pitch mapping if synth emulation is on */
+        uint8_t drum_pitch_map[128];
+        if (ch->is_percussion && ch->synth_emulate) {
+            memset(drum_pitch_map, 60, sizeof(drum_pitch_map));
+            uint8_t used[128] = {0};
+            for (int n = 0; n < ch->notes.count; n++)
+                used[ch->notes.notes[n].pitch] = 1;
+            int next = 60;
+            for (int p = 0; p < 128; p++)
+                if (used[p]) { drum_pitch_map[p] = (uint8_t)next; if (next < 96) next++; }
+        }
+
+        /* Find or create the target layer */
         int target = -1;
         for (int li = 0; li < out->num_layers; li++) {
             if (out->layers[li].inst_id == eff_inst) {
@@ -659,23 +699,64 @@ void midi_apply(MidiImportData *mid, MuseProject *out) {
                 break;
             }
         }
-        if (target < 0) {
+        if (target < 0)
             target = muse_project_add_layer(out, eff_inst);
-        }
 
-        NoteArray *dst = &out->layers[target].sublayers[0];
+        /* When combining, each channel gets its own sublayer within the shared layer.
+           Also applies to synth-emulated drums going into the same instrument. */
+        NoteArray *dst;
+        MuseLayer *tly = &out->layers[target];
+        bool is_drum_synth = ch->is_percussion && ch->synth_emulate;
+        bool use_sublayer = (mid->combine_all && !ch->is_percussion) ||
+                            (is_drum_synth && tly->sublayers[0].count > 0);
+        if (use_sublayer) {
+            if (tly->sublayers[0].count > 0) {
+                int si = muse_layer_add_sublayer(tly);
+                if (si >= 0) {
+                    dst = &tly->sublayers[si];
+                    if (is_drum_synth)
+                        tly->drum_sub_mask |= (1u << si);
+                } else {
+                    dst = &tly->sublayers[0];
+                }
+            } else {
+                dst = &tly->sublayers[0];
+                if (is_drum_synth)
+                    tly->drum_sub_mask |= 1u;
+            }
+        } else {
+            dst = &tly->sublayers[0];
+            if (is_drum_synth)
+                tly->drum_sub_mask |= 1u;
+        }
         for (int n = 0; n < ch->notes.count; n++) {
-            note_array_push(dst, ch->notes.notes[n]);
+            MuseNote note = ch->notes.notes[n];
+            note.ntype = ch->user_ntype;
+            /* Apply drum→synth pitch mapping */
+            if (ch->is_percussion && ch->synth_emulate)
+                note.pitch = drum_pitch_map[note.pitch];
+            /* proportional volume scaling */
+            if (ch->user_volume < 100) {
+                int v = (int)(note.vel * ch->user_volume / 100);
+                if (v < 1) v = 1;
+                if (v > 127) v = 127;
+                note.vel = (uint8_t)v;
+            }
+            note_array_push(dst, note);
         }
     }
+    } /* end drum_pass loop */
 
     out->dirty = true;
 }
 
 void midi_import_data_free(MidiImportData *mid) {
     if (!mid) return;
-    for (int i = 0; i < mid->num_channels; i++)
+    for (int i = 0; i < mid->num_channels; i++) {
         free(mid->channels[i].notes.notes);
+        if (mid->has_orig)
+            free(mid->orig_notes[i].notes);
+    }
     free(mid);
 }
 

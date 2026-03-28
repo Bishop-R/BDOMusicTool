@@ -723,6 +723,32 @@ static void restart_playback_if_playing(MuseApp *app) {
     (void)app;
 }
 
+/* Clear selection on all notes across all layers */
+static void deselect_all_notes(MuseProject *p) {
+    for (int li = 0; li < p->num_layers; li++)
+        for (int si = 0; si < p->layers[li].num_sublayers; si++) {
+            NoteArray *na = &p->layers[li].sublayers[si];
+            for (int ni = 0; ni < na->count; ni++)
+                na->notes[ni].selected = 0;
+        }
+}
+
+/* Switch active layer, clearing selection from the previous one */
+static void switch_active_layer(MuseApp *app, int new_layer) {
+    if (new_layer == app->project.active_layer) return;
+    deselect_all_notes(&app->project);
+    app->project.active_layer = new_layer;
+}
+
+/* Switch active sublayer within a layer, clearing selection */
+static void switch_active_sublayer(MuseApp *app, int layer, int new_sub) {
+    MuseLayer *ly = &app->project.layers[layer];
+    if (layer == app->project.active_layer && new_sub == ly->active_sub) return;
+    deselect_all_notes(&app->project);
+    app->project.active_layer = layer;
+    ly->active_sub = new_sub;
+}
+
 static void delete_selected(MuseApp *app) {
     NoteArray *na = app_active_notes(app);
     if (!na) return;
@@ -755,11 +781,9 @@ static void handle_left_panel_click(MuseApp *app, float mx, float my) {
     for (int i = 0; i < app->project.num_layers; i++) {
         MuseLayer *ly = &app->project.layers[i];
 
-        /* separator: 2px above + 1px line + 2px below = 5px */
-        if (i > 0) {
-            cy += 2;
-            cy += 3;
-        }
+        /* spacing between instruments (matches render) */
+        if (i > 0)
+            cy += 12;
 
         float row_top = cy;
 
@@ -784,7 +808,7 @@ static void handle_left_panel_click(MuseApp *app, float mx, float my) {
             }
             /* Name area  - select layer */
             if (mx >= 74) {
-                app->project.active_layer = i;
+                switch_active_layer(app, i);
                 return;
             }
         }
@@ -792,7 +816,7 @@ static void handle_left_panel_click(MuseApp *app, float mx, float my) {
 
         /* bottom row: aux btn + vol slider, h=28 */
         if (my >= cy && my < cy + 28) {
-            app->project.active_layer = i;
+            switch_active_layer(app, i);
             /* Aux button: x=24, w=32 */
             if (mx >= 24 && mx < 56) {
                 app->aux_open = true;
@@ -815,42 +839,59 @@ static void handle_left_panel_click(MuseApp *app, float mx, float my) {
         }
         cy += 28; /* aux/vol row h=28 */
 
-        /* sublayer tabs */
+        /* sublayer tabs — wrapped, 5 per row */
         cy += 2;
-        if (my >= cy && my < cy + 18) {
-            float tx = 24;
+        {
+            #define SUBS_PER_ROW 5
+            #define SUB_TAB_W 24
+            #define SUB_ROW_H 20
+            float sub_base_y = cy;
             for (int si = 0; si < ly->num_sublayers; si++) {
-                if (mx >= tx && mx < tx + 22) {
-                    /* Select this sublayer */
-                    ly->active_sub = si;
-                    app->project.active_layer = i;
+                int col = si % SUBS_PER_ROW;
+                int row = si / SUBS_PER_ROW;
+                float tx = 24 + col * SUB_TAB_W;
+                float ty = sub_base_y + row * SUB_ROW_H;
+                if (mx >= tx && mx < tx + 22 && my >= ty && my < ty + 18) {
+                    switch_active_sublayer(app, i, si);
                     return;
                 }
-                tx += 24;
             }
-            /* + button */
-            if (mx >= tx && mx < tx + 22) {
+            /* +/- buttons */
+            int last_col = ly->num_sublayers % SUBS_PER_ROW;
+            int last_row = ly->num_sublayers / SUBS_PER_ROW;
+            float btn_tx = 24 + last_col * SUB_TAB_W;
+            float btn_ty = sub_base_y + last_row * SUB_ROW_H;
+            if (mx >= btn_tx && mx < btn_tx + 22 && my >= btn_ty && my < btn_ty + 18) {
                 muse_layer_add_sublayer(ly);
-                app->project.active_layer = i;
+                switch_active_layer(app, i);
                 return;
             }
-            tx += 24;
-            /* - button (if num_sublayers > 1) */
-            if (ly->num_sublayers > 1 && mx >= tx && mx < tx + 22) {
+            btn_tx += SUB_TAB_W;
+            if (btn_tx + 22 > 24 + SUBS_PER_ROW * SUB_TAB_W) {
+                btn_tx = 24;
+                btn_ty += SUB_ROW_H;
+            }
+            if (ly->num_sublayers > 1 && mx >= btn_tx && mx < btn_tx + 22 &&
+                my >= btn_ty && my < btn_ty + 18) {
                 undo_push(&app->project);
                 muse_layer_remove_sublayer(ly, ly->active_sub);
-                app->project.active_layer = i;
+                switch_active_layer(app, i);
                 return;
             }
+            int total_sub_rows = (ly->num_sublayers + 2 + SUBS_PER_ROW - 1) / SUBS_PER_ROW;
+            if (total_sub_rows < 1) total_sub_rows = 1;
+            cy = sub_base_y + total_sub_rows * SUB_ROW_H;
+            #undef SUBS_PER_ROW
+            #undef SUB_TAB_W
+            #undef SUB_ROW_H
         }
-        cy += 20; /* sublayer tabs h=18+2 */
 
         /* Marnian synth profile selector (0x14, 0x18, 0x1C, 0x20) */
         if (ly->inst_id == 0x14 || ly->inst_id == 0x18 ||
             ly->inst_id == 0x1C || ly->inst_id == 0x20) {
             cy += 2; /* pady=(2,0) */
             if (my >= cy && my < cy + 20 && mx >= 80 && mx < 170) {
-                app->project.active_layer = i;
+                switch_active_layer(app, i);
                 app->dropdown_open = 4;
                 app->dropdown_anchor = (UiRect){ 80, cy, 90, 20 };
                 app->dropdown_hover = -1;
@@ -1226,6 +1267,11 @@ static void handle_mouse_down_roll(MuseApp *app, float mx, float my, int button)
         if (app->project.num_layers > 0) {
             MuseLayer *ly = &app->project.layers[app->project.active_layer];
             if (inst_is_spacer_key(ly->inst_id, (uint8_t)pitch)) goto skip_note_place;
+            /* Enforce per-instrument note limit */
+            if (muse_layer_note_count(ly) >= MAX_NOTES_PER_INSTRUMENT) {
+                set_status_msg(app, "Note limit reached (%d per instrument)", MAX_NOTES_PER_INSTRUMENT);
+                goto skip_note_place;
+            }
         }
         MuseNote note = {
             .pitch = (uint8_t)pitch,
@@ -2012,7 +2058,7 @@ static bool handle_picker_event(MuseApp *app, const SDL_Event *ev) {
             if (app->picker_mode == 0) {
                 /* Add new instrument layer */
                 muse_project_add_layer(&app->project, inst_id);
-                app->project.active_layer = app->project.num_layers - 1;
+                switch_active_layer(app, app->project.num_layers - 1);
             } else if (app->picker_mode == 2) {
                 /* change active layer's instrument */
                 if (app->project.num_layers > 0) {
@@ -2070,7 +2116,7 @@ static bool handle_picker_event(MuseApp *app, const SDL_Event *ev) {
                         /* Adjust target index if it shifted */
                         if (target > src_layer) target--;
                     }
-                    app->project.active_layer = target;
+                    switch_active_layer(app, target);
                 }
             }
             app->picker_open = false;
@@ -2261,11 +2307,12 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
     if (!app->midi_dlg_open || !app->midi_dlg_data) return false;
     MidiImportData *mid = (MidiImportData *)app->midi_dlg_data;
 
-    float dw = 500, dh = 452;
+    float dw = 750, dh = 452;
     float dx = ((float)app->win_w - dw) / 2;
     float dy = ((float)app->win_h - dh) / 2;
 
-    float content_y = dy + 50;
+    /* Must match render: dialog frame header (34) + padding (4) + subtitle (18) */
+    float content_y = dy + 34 + 4 + 18;
     if (mid->tempo_changes > 1) {
         content_y += 16;
     }
@@ -2376,6 +2423,67 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
         return true; /* consume all events while inst dropdown is open */
     }
 
+    /* Technique dropdown overlay handling */
+    if (app->midi_dlg_tech_dropdown_ch >= 0) {
+        int tch = app->midi_dlg_tech_dropdown_ch;
+        MidiChannel *tch_data = &mid->channels[tch];
+        /* Use effective instrument (respects combine_all) */
+        uint8_t eff_id = tch_data->user_inst_id;
+        if (mid->combine_all && !tch_data->is_percussion)
+            eff_id = mid->combine_inst_id;
+        const MuseInstrument *tins = inst_by_id(eff_id);
+        int num_techs = tins ? tins->num_techniques : 1;
+
+        float td_x = dx + 450;
+        float td_row_y = content_y + tch * row_h - app->midi_dlg_scroll;
+        float td_anchor_y = td_row_y + row_h + 2;
+        float td_w = 160;
+        float td_item_h = 24;
+        float td_total_h = 4 + num_techs * td_item_h;
+        float td_y = td_anchor_y;
+        if (td_y + td_total_h > dy + dh) td_y = td_anchor_y - td_total_h - row_h - 4;
+        if (td_y < 0) td_y = 0;
+        float td_max_h = (float)app->win_h - td_y - 10;
+        float td_h = td_total_h > td_max_h ? td_max_h : td_total_h;
+
+        if (ev->type == SDL_EVENT_MOUSE_MOTION) {
+            float mx2 = ev->motion.x, my2 = ev->motion.y;
+            app->midi_dlg_tech_dropdown_hover = -1;
+            if (mx2 >= td_x && mx2 < td_x + td_w && my2 >= td_y && my2 < td_y + td_h) {
+                float ty = td_y + 2 - app->midi_dlg_tech_dropdown_scroll;
+                for (int t = 0; t < num_techs; t++) {
+                    if (my2 >= ty && my2 < ty + td_item_h)
+                        app->midi_dlg_tech_dropdown_hover = t;
+                    ty += td_item_h;
+                }
+            }
+            return true;
+        }
+        if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev->button.button == SDL_BUTTON_LEFT) {
+            if (app->midi_dlg_tech_dropdown_hover >= 0 &&
+                app->midi_dlg_tech_dropdown_hover < num_techs && tins) {
+                tch_data->user_ntype = tins->techniques[app->midi_dlg_tech_dropdown_hover];
+            }
+            app->midi_dlg_tech_dropdown_ch = -1;
+            app->midi_dlg_tech_dropdown_scroll = 0;
+            return true;
+        }
+        if (ev->type == SDL_EVENT_MOUSE_WHEEL) {
+            app->midi_dlg_tech_dropdown_scroll -= ev->wheel.y * 20;
+            float max_scroll = td_total_h - td_h;
+            if (max_scroll < 0) max_scroll = 0;
+            if (app->midi_dlg_tech_dropdown_scroll < 0) app->midi_dlg_tech_dropdown_scroll = 0;
+            if (app->midi_dlg_tech_dropdown_scroll > max_scroll) app->midi_dlg_tech_dropdown_scroll = max_scroll;
+            return true;
+        }
+        if (ev->type == SDL_EVENT_KEY_DOWN && ev->key.key == SDLK_ESCAPE) {
+            app->midi_dlg_tech_dropdown_ch = -1;
+            app->midi_dlg_tech_dropdown_scroll = 0;
+            return true;
+        }
+        return true;
+    }
+
     if (ev->type == SDL_EVENT_MOUSE_MOTION) {
         float mx = ev->motion.x, my = ev->motion.y;
         app->midi_dlg_hover = -1;
@@ -2390,6 +2498,20 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
         /* Check buttons */
         if (ui_rect_contains(import_btn, mx, my)) app->midi_dlg_hover_btn = 1;
         if (ui_rect_contains(cancel_btn, mx, my)) app->midi_dlg_hover_btn = 2;
+
+        /* Volume slider drag */
+        if (ev->motion.state & SDL_BUTTON_LMASK) {
+            int hover = app->midi_dlg_hover;
+            if (hover >= 0 && hover < mid->num_channels) {
+                float ry = content_y + hover * row_h - app->midi_dlg_scroll;
+                if (mx >= dx + 600 && mx < dx + 700 && my >= ry && my < ry + row_h) {
+                    int vol = (int)((mx - (dx + 600)) / 100.0f * 100.0f + 0.5f);
+                    if (vol < 0) vol = 0;
+                    if (vol > 100) vol = 100;
+                    mid->channels[hover].user_volume = (uint8_t)vol;
+                }
+            }
+        }
         return true;
     }
 
@@ -2445,15 +2567,55 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
             }
         }
 
+        /* Click on Synth toggle for percussion channels */
+        if (app->midi_dlg_hover >= 0 && app->midi_dlg_hover < mid->num_channels) {
+            MidiChannel *hch = &mid->channels[app->midi_dlg_hover];
+            float ry_se = content_y + app->midi_dlg_hover * row_h - app->midi_dlg_scroll;
+            if (hch->is_percussion && mx >= dx + 200 && mx < dx + 250 &&
+                my >= ry_se + 6 && my < ry_se + 26) {
+                hch->synth_emulate = !hch->synth_emulate;
+                if (hch->synth_emulate) {
+                    /* Default to Marnian Sine with Short technique */
+                    hch->user_inst_id = 0x14;
+                    hch->user_ntype = 4;
+                } else {
+                    /* Restore original drum instrument */
+                    hch->user_inst_id = hch->auto_inst_id;
+                    hch->user_ntype = 0;
+                }
+                return true;
+            }
+        }
+
         /* Click on instrument selector -> open dropdown for that channel */
         if (app->midi_dlg_hover >= 0 && app->midi_dlg_hover < mid->num_channels) {
             MidiChannel *hch = &mid->channels[app->midi_dlg_hover];
-            bool ch_greyed = mid->combine_all && !hch->is_percussion;
+            bool is_combined = mid->combine_all && !hch->is_percussion;
             float ry = content_y + app->midi_dlg_hover * row_h - app->midi_dlg_scroll;
-            if (!ch_greyed && mx >= dx + 260 && mx < dx + 260 + 180 && my >= ry && my < ry + row_h) {
-                app->midi_dlg_dropdown_ch = app->midi_dlg_hover;
+            if (mx >= dx + 260 && mx < dx + 260 + 180 && my >= ry && my < ry + row_h) {
+                if (is_combined) {
+                    /* open the combine instrument selector */
+                    app->midi_dlg_dropdown_ch = -2;
+                } else {
+                    app->midi_dlg_dropdown_ch = app->midi_dlg_hover;
+                }
                 app->midi_dlg_dropdown_hover = -1;
                 app->midi_dlg_dropdown_scroll = 0;
+                return true;
+            }
+            /* Click on technique selector */
+            if (mx >= dx + 450 && mx < dx + 450 + 140 && my >= ry && my < ry + row_h) {
+                app->midi_dlg_tech_dropdown_ch = app->midi_dlg_hover;
+                app->midi_dlg_tech_dropdown_hover = -1;
+                app->midi_dlg_tech_dropdown_scroll = 0;
+                return true;
+            }
+            /* Click/drag on volume slider */
+            if (mx >= dx + 600 && mx < dx + 700 && my >= ry && my < ry + row_h) {
+                int vol = (int)((mx - (dx + 600)) / 100.0f * 100.0f + 0.5f);
+                if (vol < 0) vol = 0;
+                if (vol > 100) vol = 100;
+                mid->channels[app->midi_dlg_hover].user_volume = (uint8_t)vol;
                 return true;
             }
         }
@@ -2485,10 +2647,9 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
                 for (int li = 0; li < app->project.num_layers; li++)
                     for (int si = 0; si < app->project.layers[li].num_sublayers; si++)
                         total_notes += app->project.layers[li].sublayers[si].count;
-                set_status_msg(app, "Imported: %s (%d notes)", app->filename, total_notes);
+                set_status_msg(app, "Imported: %s (%d notes)  |  Ctrl+M to re-import", app->filename, total_notes);
             }
-            midi_import_data_free(mid);
-            app->midi_dlg_data = NULL;
+            /* keep data alive so Ctrl+M can reopen */
             app->midi_dlg_open = false;
             return true;
         }
@@ -2511,8 +2672,7 @@ static bool handle_midi_dlg_event(MuseApp *app, const SDL_Event *ev) {
             SDL_StopTextInput(app->window);
             return true;
         }
-        midi_import_data_free(mid);
-        app->midi_dlg_data = NULL;
+        /* keep data alive so Ctrl+M can reopen */
         app->midi_dlg_open = false;
         return true;
     }
@@ -2902,17 +3062,6 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
         if (ev->button.button == SDL_BUTTON_LEFT && ui_toolbar_click(app, mx, my))
             break;
 
-        /* Corner collapse lip */
-        if (ev->button.button == SDL_BUTTON_LEFT) {
-            float keys_x = (float)(app->left_panel_open ? LEFT_PANEL_W : 0);
-            float lip_x = keys_x + KEYS_WIDTH - CORNER_TAB_W;
-            float lip_y = (float)(TRANSPORT_H + 2);
-            if (mx >= lip_x && mx < lip_x + CORNER_TAB_W &&
-                my >= lip_y && my < lip_y + HEADER_HEIGHT) {
-                app->left_panel_open = !app->left_panel_open;
-                break;
-            }
-        }
 
         /* Left panel layer selection */
         /* Left panel scrollbar drag */
@@ -2964,13 +3113,11 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
             cy_chk += 10;       /* header top offset */
             cy_chk += 28 + 5;   /* header h=28 + gap to first row */
             for (int i = 0; i < app->project.num_layers; i++) {
-                /* separator: 5px total */
-                if (i > 0) {
-                    cy_chk += 2;
-                    cy_chk += 3;
-                }
+                /* spacing between instruments (matches render) */
+                if (i > 0)
+                    cy_chk += 12;
                 if (my >= cy_chk && my < cy_chk + 28 && mx >= 74) {
-                    app->project.active_layer = i;
+                    switch_active_layer(app, i);
                     app->picker_open = true;
                     app->picker_mode = 2; /* change this layer's instrument */
                     app->picker_scroll = 0;
@@ -2979,12 +3126,17 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
                 }
                 cy_chk += 28;       /* top row h=28 */
                 cy_chk += 28;       /* aux/vol row h=28 */
-                cy_chk += 2 + 20;   /* sublayer gap + tabs */
-                /* Marnian synth profile row adds extra height */
-                MuseLayer *rly = &app->project.layers[i];
-                if (rly->inst_id == 0x14 || rly->inst_id == 0x18 ||
-                    rly->inst_id == 0x1C || rly->inst_id == 0x20)
-                    cy_chk += 2 + 22;
+                /* sublayer tabs: wrapped, 5 per row */
+                {
+                    MuseLayer *rly = &app->project.layers[i];
+                    int sub_rows = (rly->num_sublayers + 2 + 4) / 5;
+                    if (sub_rows < 1) sub_rows = 1;
+                    cy_chk += 2 + sub_rows * 20;
+                    /* synth profile selector */
+                    if (rly->inst_id == 0x14 || rly->inst_id == 0x18 ||
+                        rly->inst_id == 0x1C || rly->inst_id == 0x20)
+                        cy_chk += 2 + 22;
+                }
             }
             break;
         }
@@ -3336,8 +3488,10 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
             break;
         case SDLK_A:
             if (ctrl) {
-                NoteArray *na = app_active_notes(app);
-                if (na) for (int i = 0; i < na->count; i++) na->notes[i].selected = 1;
+                {
+                    NoteArray *na = app_active_notes(app);
+                    if (na) for (int i = 0; i < na->count; i++) na->notes[i].selected = 1;
+                }
             }
             break;
         case SDLK_Z:
@@ -3686,7 +3840,11 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
                     } else {
                         offset = 0; /* paste in-place */
                     }
-                    for (int i = 0; i < app->clipboard.count; i++) {
+                    MuseLayer *ply = &app->project.layers[app->project.active_layer];
+                    int room = MAX_NOTES_PER_INSTRUMENT - muse_layer_note_count(ply);
+                    int paste_count = app->clipboard.count;
+                    if (paste_count > room) paste_count = room;
+                    for (int i = 0; i < paste_count; i++) {
                         MuseNote n = app->clipboard.notes[i];
                         n.start += offset;
                         n.selected = 1;
@@ -3694,7 +3852,10 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
                     }
                     app->project.dirty = true;
                     auto_expand_measures(app);
-                    set_status_msg(app, "Pasted %d notes", app->clipboard.count);
+                    if (paste_count < app->clipboard.count)
+                        set_status_msg(app, "Pasted %d/%d notes (limit reached)", paste_count, app->clipboard.count);
+                    else
+                        set_status_msg(app, "Pasted %d notes", paste_count);
                     restart_playback_if_playing(app);
                 }
             }
@@ -3702,6 +3863,17 @@ void muse_app_handle_event(MuseApp *app, const SDL_Event *ev) {
         case SDLK_F11:
             app->perspective_enabled = !app->perspective_enabled;
             set_status_msg(app, "3D mode: %s", app->perspective_enabled ? "ON" : "OFF");
+            break;
+        case SDLK_M:
+            if (ctrl && app->midi_dlg_data && !app->midi_dlg_open) {
+                app->midi_dlg_open = true;
+                app->midi_dlg_scroll = 0;
+                app->midi_dlg_hover = -1;
+                app->midi_dlg_hover_btn = 0;
+                app->midi_dlg_dropdown_ch = -1;
+                app->midi_dlg_dropdown_hover = -1;
+                app->midi_dlg_dropdown_scroll = 0;
+            }
             break;
         default: break;
         }
@@ -3871,15 +4043,29 @@ void muse_app_render(MuseApp *app) {
     if (app->perspective_t > 0.01f) {
         uint8_t fa = (uint8_t)(fminf(app->perspective_t * 3.0f, 1.0f) * 255);
         draw_filled_rect(app->renderer, 0, 0, (float)app->win_w, TRANSPORT_H + 2,
-                         0x16, 0x16, 0x18, fa);
+                         COL_BG_DARK, fa);
     }
     ui_piano_roll_render(app);
+
+    /* Toolbar drop shadow — soft gradient for depth separation */
+    if (app->perspective_t < 0.5f) {
+        float shadow_y = (float)(TRANSPORT_H + 2);
+        for (int i = 0; i < 6; i++) {
+            uint8_t sa = (uint8_t)((30 - i * 5) * (1.0f - app->perspective_t * 2.0f));
+            draw_filled_rect(r, 0, shadow_y + i, (float)app->win_w, 1,
+                             0x00, 0x00, 0x00, sa);
+        }
+    }
 
     /* Status bar */
     {
         float sy = (float)(app->win_h - STATUS_BAR_H);
-        draw_filled_rect(r, 0, sy, (float)app->win_w, STATUS_BAR_H,
+        /* top border line + inward shadow for inset look */
+        draw_hline(r, 0, (float)app->win_w, sy, COL_BORDER);
+        draw_filled_rect(r, 0, sy + 1, (float)app->win_w, STATUS_BAR_H - 1,
                          COL_BG, 0xFF);
+        draw_filled_rect(r, 0, sy + 1, (float)app->win_w, 1,
+                         0x00, 0x00, 0x00, 0x18);
 
         /* status text (shows dynamic message if recent, otherwise note count etc) */
         char status[256];
@@ -3917,7 +4103,7 @@ void muse_app_render(MuseApp *app) {
             bool hovered = (app->mouse_x >= bx && app->mouse_x <= bx + bw &&
                             app->mouse_y >= by && app->mouse_y <= by + bh);
             draw_rounded_rect(r, bx, by, bw, bh, 3,
-                              hovered ? 0x3A : 0x2A, hovered ? 0x3A : 0x2A, hovered ? 0x40 : 0x30, 0xFF);
+                              hovered ? 0x42 : 0x32, hovered ? 0x44 : 0x34, hovered ? 0x4A : 0x3A, 0xFF);
             draw_text_centered(r, btn_text, bx + bw/2, by + bh/2, 10, COL_TEXT_DIM);
         }
     }
@@ -3926,7 +4112,7 @@ void muse_app_render(MuseApp *app) {
         float sy = (float)(app->win_h - STATUS_BAR_H);
         uint8_t fa = (uint8_t)(fminf(app->perspective_t * 3.0f, 1.0f) * 255);
         draw_filled_rect(r, 0, sy, (float)app->win_w, STATUS_BAR_H,
-                         0x16, 0x16, 0x18, fa);
+                         COL_BG_DARK, fa);
     }
 
     /* Modal overlays (drawn on top of everything) */
@@ -3947,19 +4133,14 @@ void muse_app_render(MuseApp *app) {
         if (sy2 + sh > (float)app->win_h) sy2 = (float)app->win_h - sh;
         app->shortcuts_x = sx; app->shortcuts_y = sy2;
 
-        /* shadow */
-        draw_rounded_rect(r, sx + 3, sy2 + 3, sw, sh, 6, 0x00, 0x00, 0x00, 0x60);
-        /* background */
-        draw_rounded_rect(r, sx, sy2, sw, sh, 6, COL_SURFACE, 0xFF);
-        /* title bar */
-        draw_filled_rect(r, sx, sy2, sw, 26, COL_BG, 0xFF);
-        draw_text_bold(r, "Keyboard Shortcuts", sx + 8, sy2 + 7, 11, COL_GOLD);
-        draw_text(r, "x", sx + sw - 18, sy2 + 6, 13, COL_TEXT_DIM);
+        DialogFrame df = draw_dialog_frame(r, sx, sy2, sw, sh, "Keyboard Shortcuts",
+                                           app->mouse_x, app->mouse_y);
 
         /* content area with clipping and scroll */
-        float content_y = sy2 + 28;
-        float content_h = sh - 30;
-        float total_content_h = 700; /* approximate total height of all rows */
+        float content_y = df.content_y;
+        float content_h = df.content_h;
+        /* total_content_h computed after drawing, clamp scroll first pass */
+        float total_content_h = app->_shortcuts_content_h > 0 ? app->_shortcuts_content_h : 800;
         float max_scroll = total_content_h - content_h;
         if (max_scroll < 0) max_scroll = 0;
         if (app->shortcuts_scroll > max_scroll) app->shortcuts_scroll = max_scroll;
@@ -4029,10 +4210,18 @@ void muse_app_render(MuseApp *app) {
         SC_ROW("Alt+Scroll",     "Vertical zoom");
         SC_ROW("Middle-Drag",    "Pan view");
         SC_ROW("Ctrl+L",         "Loop selection");
+        SC_ROW("Ctrl+M",         "Reopen MIDI import");
         SC_ROW("Shift+Drag bar", "Set loop region");
         SC_ROW("F11",            "3D mode (playback)");
 
         #undef SC_ROW
+
+        /* compute actual content height from final ly position */
+        app->_shortcuts_content_h = (ly + app->shortcuts_scroll) - content_y + 8;
+        total_content_h = app->_shortcuts_content_h;
+        max_scroll = total_content_h - content_h;
+        if (max_scroll < 0) max_scroll = 0;
+        if (app->shortcuts_scroll > max_scroll) app->shortcuts_scroll = max_scroll;
 
         /* scrollbar if needed */
         if (max_scroll > 0) {
@@ -4041,8 +4230,8 @@ void muse_app_render(MuseApp *app) {
             float sb_thumb_h = (content_h / total_content_h) * sb_track_h;
             if (sb_thumb_h < 20) sb_thumb_h = 20;
             float sb_thumb_y = content_y + 2 + (app->shortcuts_scroll / max_scroll) * (sb_track_h - sb_thumb_h);
-            draw_filled_rect(r, sb_x, content_y + 2, 4, sb_track_h, 0x30, 0x30, 0x35, 0xFF);
-            draw_rounded_rect(r, sb_x, sb_thumb_y, 4, sb_thumb_h, 2, 0x60, 0x60, 0x68, 0xFF);
+            draw_filled_rect(r, sb_x, content_y + 2, 4, sb_track_h, COL_BG_LIGHT, 0xFF);
+            draw_rounded_rect(r, sb_x, sb_thumb_y, 4, sb_thumb_h, 2, COL_BORDER_LIGHT, 0xFF);
         }
 
         pop_clip(r);
