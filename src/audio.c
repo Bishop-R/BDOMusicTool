@@ -1007,7 +1007,15 @@ static int select_vel_layer(int num_wems, int velocity) {
 }
 
 /* LRU cache eviction */
+/* Playback state flag — set true while audio is active.
+   Used to prevent cache eviction from freeing samples the audio callback reads. */
+static bool g_playback_active = false;
+
 static void cache_evict_lru(void) {
+    /* Don't evict during playback — audio callback may be reading sample data.
+       The cache will grow temporarily but is bounded by MAX_CACHED slots. */
+    if (g_playback_active) return;
+
     /* Find least-recently-used entry */
     int lru = 0;
     for (int i = 1; i < g_cache_count; i++)
@@ -1032,10 +1040,18 @@ static CachedSample *load_wem(const char *dir_name, uint32_t wem_id, int root_pi
         }
     }
 
-    /* Evict until we have room (slot count and memory budget) */
+    /* Evict until we have room (slot count and memory budget).
+       During playback, eviction is skipped to prevent use-after-free,
+       so we may temporarily exceed the budget — that's fine. */
     while (g_cache_count >= MAX_CACHED ||
-           (g_cache_count > 0 && g_cache_bytes > CACHE_MEM_LIMIT))
+           (g_cache_count > 0 && g_cache_bytes > CACHE_MEM_LIMIT)) {
+        int prev = g_cache_count;
         cache_evict_lru();
+        if (g_cache_count == prev) break; /* couldn't evict (playback active) */
+    }
+
+    /* If cache is full and we couldn't evict, fall back to synth */
+    if (g_cache_count >= MAX_CACHED) return NULL;
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s/%u.ogg", g_samples_dir, dir_name, wem_id);
@@ -1524,12 +1540,22 @@ static float chorus_process(ChorusState *c, float input, float depth, float freq
     return out * wet;
 }
 
-/* grab a free voice slot, steal the oldest if all taken */
+/* grab a free voice slot, steal if all taken.
+   Priority: 1) inactive slot, 2) fading-out voice (oldest), 3) oldest active */
 static Voice *alloc_voice(void) {
     for (int i = 0; i < MAX_VOICES; i++) {
         if (!g_voices[i].active) return &g_voices[i];
     }
-    /* Steal oldest (highest pos = most frames rendered) */
+    /* Prefer stealing a voice that's already fading out */
+    int fade_oldest = -1;
+    for (int i = 0; i < MAX_VOICES; i++) {
+        if (g_voices[i].fading_out) {
+            if (fade_oldest < 0 || g_voices[i].pos > g_voices[fade_oldest].pos)
+                fade_oldest = i;
+        }
+    }
+    if (fade_oldest >= 0) return &g_voices[fade_oldest];
+    /* Steal oldest active voice (highest pos = most frames rendered) */
     int oldest = 0;
     for (int i = 1; i < MAX_VOICES; i++) {
         if (g_voices[i].pos > g_voices[oldest].pos) oldest = i;
@@ -1553,8 +1579,9 @@ static Voice *trigger_note_ex(uint8_t inst_id, int pitch, int velocity,
     }
 
     Voice *v = alloc_voice();
+    v->active = false;  /* deactivate first so audio callback skips this slot */
+    SDL_MemoryBarrierRelease();
     memset(v, 0, sizeof(*v));
-    v->active = true;
     v->note_frames = (int)(fmax(10.0, fmin(duration_ms, 30000.0)) / 1000.0 * SAMPLE_RATE);
 
     /* Check if this is a synth instrument (for technique modulation) */
@@ -1738,6 +1765,11 @@ static Voice *trigger_note_ex(uint8_t inst_id, int pitch, int velocity,
 
     v->pos = 0;
     v->frac_pos = 0;
+
+    /* Activate LAST — audio callback checks this flag first.
+       Memory barrier ensures all fields above are visible before active=true. */
+    SDL_MemoryBarrierRelease();
+    v->active = true;
     return v;
 }
 
@@ -2207,12 +2239,23 @@ static void audio_callback(ma_device *dev, void *output, const void *input,
         has_fx = false; /* safety: don't overflow stack */
     }
 
-    /* Mix voices */
+    /* Mix voices — count active for load shedding */
+    int cb_active = 0;
+    for (int v = 0; v < MAX_VOICES; v++)
+        if (g_voices[v].active) cb_active++;
+
     for (int v = 0; v < MAX_VOICES; v++) {
         Voice *vc = &g_voices[v];
         if (!vc->active) continue;
+        SDL_MemoryBarrierAcquire(); /* ensure we see fully initialized voice data */
         /* When paused: freeze playback voices, still render previews */
         if (g_playback_paused && vc->src_layer >= 0) continue;
+
+        /* Under heavy load: skip fading-out voices (they're nearly silent anyway) */
+        if (cb_active > 96 && vc->fading_out && vc->fade_mult < 0.1f) {
+            vc->active = false;
+            continue;
+        }
 
         for (ma_uint32 f = 0; f < frames; f++) {
             float l, r;
@@ -2393,6 +2436,7 @@ void muse_audio_play(MuseProject *proj, double start_ms) {
     g_pb.position_ms = start_ms;
     g_pb.prev_tick_ms = start_ms - 50.0; /* well before so first-beat notes always trigger */
     g_pb.playing = true;
+    g_playback_active = true;
 
     /* make sure device is running */
     if (g_initialized)
@@ -2406,6 +2450,7 @@ void muse_audio_stop(void) {
     for (int i = 0; i < MAX_VOICES; i++)
         g_voices[i].active = false;
     g_pb.position_ms = 0;
+    g_playback_active = false;
 }
 
 void muse_audio_pause(void) {
@@ -2524,7 +2569,16 @@ void muse_audio_tick(double current_ms) {
         }
     }
 
-    /* live-change detection: update/retrigger voices when user edits during playback */
+    /* Count active voices for load-shedding decisions */
+    int active_count = 0;
+    for (int v = 0; v < MAX_VOICES; v++)
+        if (g_voices[v].active) active_count++;
+
+    /* live-change detection: update/retrigger voices when user edits during playback.
+       Under heavy polyphony (>96 voices), skip the expensive per-note scan since
+       the user is unlikely to be editing while 100+ notes are playing. */
+    bool skip_note_scan = (active_count > 96);
+
     for (int v = 0; v < MAX_VOICES; v++) {
         Voice *vc = &g_voices[v];
         if (!vc->active || vc->fading_out) continue;
@@ -2549,6 +2603,8 @@ void muse_audio_tick(double current_ms) {
         vc->rev_send = ly->reverb_send / 100.0f;
         vc->dly_send = ly->delay_send / 100.0f;
         vc->cho_send = ly->chorus_send / 100.0f;
+
+        if (skip_note_scan) continue;
 
         /* 4. Find the source note to check for property changes */
         MuseNote *sn = find_voice_note(proj, vc->src_layer, vc->src_note_start, vc->src_pitch);
