@@ -1,0 +1,17 @@
+name: Linux and Windows
+on: [push, pull_request]
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@master
+      - name: Configure
+        run: cmake -S src -B build -G Ninja -DBUILD_TESTING=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

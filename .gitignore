@@ -1,0 +1,7 @@
+build/
+build-win64/
+*.o
+*.obj
+*.exe
+*.res
+
