@@ -53,6 +53,7 @@ Linux desktop integration (icon + .desktop file):
 - All BDO instruments: Beginner, Florchestra, Marnian synths, electric guitars
 - Per-instrument reverb, delay, and chorus sends (Still WIP)
 - Undo/redo, copy/paste, transpose, etc.
+- Tempo mapping
 - Quantize (`Ctrl+Alt+Q`), humanize (`Ctrl+Alt+H`), arpeggiate
   (`Ctrl+Alt+A`), and strum (`Ctrl+Alt+S`) selected notes
 - MIDI export (`Ctrl+Shift+M`) using BDO's single project tempo
