@@ -6,7 +6,7 @@ Supports all 26+ BDO instruments, per-instrument aux sends, MIDI tempo maps, and
 
 ![Screenshot](Screenshot.png)
 
-**Early access** — there will be bugs. Report them via [Issues](https://github.com/Bishop-R/BDOMusicTool/issues) or Discord DM: `bishof.`
+**There is only so much I can add before running into BDO constraints** so I will not actively update this on my own. But if you have feature requests or find bugs Report them via [Issues](https://github.com/Bishop-R/BDOMusicTool/issues) or Discord DM: `bishof.` I might add your requests.
 
 Most inputs are handled via shortcuts. Check the shortcut window in the bottom right if you're lost.
 
